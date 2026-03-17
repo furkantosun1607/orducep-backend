@@ -1,0 +1,29 @@
+# ==================================
+# .NET / C# Clean Architecture Standart .gitignore
+# ==================================
+
+# 1. Derleme Sonuçları (Build çıktıları kesinlikle repoya gitmemeli)
+[Bb]in/
+[Oo]bj/
+TestResults/
+
+# 2. IDE ve Geliştirici Ortamı Klasörleri (Visual Studio / VS Code kişisel ayarları)
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+
+# 3. Log Dosyaları (Görselde api.log gördüğüm için bunu kesinlikle engelliyoruz)
+*.log
+logs/
+
+# 4. İşletim Sistemi Çöp Dosyaları (Mac veya Windows görünmez dosyaları)
+.DS_Store
+Thumbs.db
+
+# 5. Hassas Veriler ve Konfigürasyonlar (Veritabanı şifreleri vs.)
+appsettings.Development.json
+*.env
+.env
