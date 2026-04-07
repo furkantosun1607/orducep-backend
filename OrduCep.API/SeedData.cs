@@ -1,7 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using OrduCep.Infrastructure.Persistence;
 using OrduCep.Domain.Entities;
+using OrduCep.Domain.Enums;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace OrduCep.API;
 
@@ -43,22 +46,19 @@ public static class SeedData
         using var scope = serviceProvider.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<OrduCepDbContext>();
 
-        // Eğer hiç orduevi yoksa CSV'den yükle
+        // ── 1. Orduevleri (CSV'den) — DOKUNULMAZ ──
         if (!await context.Orduevleri.AnyAsync())
         {
-            // Çalışma dizininden CSV'yi oku (API'yi OrduCep.API klasöründen çalıştırıyoruz)
             var csvPath = Path.Combine(Directory.GetCurrentDirectory(), "orduevleri.csv");
             if (File.Exists(csvPath))
             {
                 var lines = await File.ReadAllLinesAsync(csvPath);
 
-                // İlk satır header, o yüzden atlıyoruz
                 foreach (var line in lines.Skip(1))
                 {
                     if (string.IsNullOrWhiteSpace(line))
                         continue;
 
-                    // Basit CSV parse (virgülle ayrılmış, metinler tırnak içinde olabilir)
                     var parts = SplitCsvLine(line);
                     if (parts.Length < 6)
                         continue;
@@ -78,124 +78,171 @@ public static class SeedData
 
                     context.Orduevleri.Add(orduevi);
                 }
+
+                await context.SaveChangesAsync();
             }
         }
 
-        // 2. Tesis şablonları yoksa Berber, Pide Salonu ve Kantin şablonlarını ekle
-        if (!await context.FacilityTemplates.AnyAsync())
+        // ── 2. Örnek Tesisler — İlk orduevine berber, pide salonu, meyhane ekle ──
+        if (!await context.Facilities.AnyAsync())
         {
-            context.FacilityTemplates.AddRange(
-                new FacilityTemplate
+            var firstOrduevi = await context.Orduevleri.FirstOrDefaultAsync();
+            if (firstOrduevi == null) return;
+
+            // ── BERBER (TimeBased, AppointmentOnly, 3 koltuk) ──
+            var berberId = Guid.NewGuid();
+            var berber = new Facility
+            {
+                Id = berberId,
+                OrdueviId = firstOrduevi.Id,
+                Name = "Yıldız Berber Salonu",
+                Category = FacilityCategory.TimeBased,
+                AppointmentMode = AppointmentMode.AppointmentOnly,
+                MaxConcurrency = 3,
+                BufferMinutes = 5,
+                DefaultSlotDurationMinutes = 30,
+                OpeningTime = new TimeSpan(8, 30, 0),
+                ClosingTime = new TimeSpan(17, 0, 0),
+                IsActive = true,
+                Description = "Erkek ve çocuk saç kesimi, sakal tıraşı.",
+                Icon = "scissors"
+            };
+
+            // ── PİDE SALONU (CapacityBased, Mixed, 5 masa) ──
+            var pideId = Guid.NewGuid();
+            var pideSalonu = new Facility
+            {
+                Id = pideId,
+                OrdueviId = firstOrduevi.Id,
+                Name = "Açık Teras Pide Salonu",
+                Category = FacilityCategory.CapacityBased,
+                AppointmentMode = AppointmentMode.Mixed,
+                MaxConcurrency = 5,
+                BufferMinutes = 10,
+                DefaultSlotDurationMinutes = 60,
+                OpeningTime = new TimeSpan(11, 0, 0),
+                ClosingTime = new TimeSpan(21, 0, 0),
+                IsActive = true,
+                Description = "Pide ve fırın ürünleri servisi.",
+                Icon = "pizza-slice"
+            };
+
+            // ── MEYHANE (SpaceBased, AppointmentOnly, 4 masa) ──
+            var meyhaneId = Guid.NewGuid();
+            var meyhane = new Facility
+            {
+                Id = meyhaneId,
+                OrdueviId = firstOrduevi.Id,
+                Name = "Sahil Meyhane",
+                Category = FacilityCategory.SpaceBased,
+                AppointmentMode = AppointmentMode.AppointmentOnly,
+                MaxConcurrency = 4,
+                BufferMinutes = 0,
+                DefaultSlotDurationMinutes = 120,
+                OpeningTime = new TimeSpan(18, 0, 0),
+                ClosingTime = new TimeSpan(23, 0, 0),
+                IsActive = true,
+                Description = "Meyhane ve canlı müzik.",
+                Icon = "wine-glass"
+            };
+
+            context.Facilities.AddRange(berber, pideSalonu, meyhane);
+            await context.SaveChangesAsync();
+
+            // ── KAYNAKLAR (Resources) ──
+
+            // Berber: 3 koltuk
+            context.Resources.AddRange(
+                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "1 Nolu Koltuk", Type = ResourceType.Chair, Capacity = 1, IsActive = true },
+                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "2 Nolu Koltuk", Type = ResourceType.Chair, Capacity = 1, IsActive = true },
+                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "3 Nolu Koltuk", Type = ResourceType.Chair, Capacity = 1, IsActive = true }
+            );
+
+            // Pide Salonu: 5 masa (farklı kapasiteler)
+            context.Resources.AddRange(
+                new Resource { Id = Guid.NewGuid(), FacilityId = pideId, Name = "Masa 1", Type = ResourceType.Table, Capacity = 2, IsActive = true, Tags = "Teras" },
+                new Resource { Id = Guid.NewGuid(), FacilityId = pideId, Name = "Masa 2", Type = ResourceType.Table, Capacity = 4, IsActive = true, Tags = "Teras" },
+                new Resource { Id = Guid.NewGuid(), FacilityId = pideId, Name = "Masa 3", Type = ResourceType.Table, Capacity = 4, IsActive = true, Tags = "İç Salon" },
+                new Resource { Id = Guid.NewGuid(), FacilityId = pideId, Name = "Masa 4", Type = ResourceType.Table, Capacity = 6, IsActive = true, Tags = "İç Salon" },
+                new Resource { Id = Guid.NewGuid(), FacilityId = pideId, Name = "Masa 5", Type = ResourceType.Table, Capacity = 8, IsActive = true, Tags = "VIP" }
+            );
+
+            // Meyhane: 4 masa (VIP dahil)
+            context.Resources.AddRange(
+                new Resource { Id = Guid.NewGuid(), FacilityId = meyhaneId, Name = "Sahne Önü 1", Type = ResourceType.Table, Capacity = 4, IsActive = true, Tags = "Sahne Önü" },
+                new Resource { Id = Guid.NewGuid(), FacilityId = meyhaneId, Name = "Sahne Önü 2", Type = ResourceType.Table, Capacity = 4, IsActive = true, Tags = "Sahne Önü" },
+                new Resource { Id = Guid.NewGuid(), FacilityId = meyhaneId, Name = "Arka Bölüm 1", Type = ResourceType.Table, Capacity = 6, IsActive = true },
+                new Resource { Id = Guid.NewGuid(), FacilityId = meyhaneId, Name = "VIP Oda", Type = ResourceType.Room, Capacity = 10, IsActive = true, Tags = "VIP" }
+            );
+
+            await context.SaveChangesAsync();
+
+            // ── HİZMETLER (Services) ──
+
+            // Berber hizmetleri
+            context.FacilityServices.AddRange(
+                new FacilityService
                 {
-                    Id = Guid.NewGuid(),
-                    Name = "Berber",
-                    Description = "Saç ve sakal hizmetleri.",
-                    Icon = "scissors",
-                    HasBookingSystem = true
+                    Id = Guid.NewGuid(), FacilityId = berberId,
+                    ServiceName = "Saç Kesimi", Price = 45.00m,
+                    DurationMinutes = 30, BufferMinutes = 5, IsActive = true
                 },
-                new FacilityTemplate
+                new FacilityService
                 {
-                    Id = Guid.NewGuid(),
-                    Name = "Pide Salonu",
-                    Description = "Pide ve fırın ürünleri servisi.",
-                    Icon = "pizza-slice",
-                    HasBookingSystem = false
+                    Id = Guid.NewGuid(), FacilityId = berberId,
+                    ServiceName = "Sakal Tıraşı", Price = 25.00m,
+                    DurationMinutes = 15, BufferMinutes = 5, IsActive = true
                 },
-                new FacilityTemplate
+                new FacilityService
                 {
-                    Id = Guid.NewGuid(),
-                    Name = "Kantin",
-                    Description = "Günlük ihtiyaçlar için kantin.",
-                    Icon = "store",
-                    HasBookingSystem = false
+                    Id = Guid.NewGuid(), FacilityId = berberId,
+                    ServiceName = "Saç & Sakal", Price = 60.00m,
+                    DurationMinutes = 40, BufferMinutes = 5, IsActive = true
                 }
             );
+
+            // Pide Salonu hizmetleri
+            context.FacilityServices.AddRange(
+                new FacilityService
+                {
+                    Id = Guid.NewGuid(), FacilityId = pideId,
+                    ServiceName = "Kıymalı Pide", Price = 85.00m,
+                    DurationMinutes = 0, BufferMinutes = 0, IsActive = true
+                },
+                new FacilityService
+                {
+                    Id = Guid.NewGuid(), FacilityId = pideId,
+                    ServiceName = "Kuşbaşılı Pide", Price = 110.00m,
+                    DurationMinutes = 0, BufferMinutes = 0, IsActive = true
+                }
+            );
+
             await context.SaveChangesAsync();
         }
 
-        // 3. Eğer hiç tesis yoksa (şablonlar olsa bile) her orduevi için Berber + Pide Salonu tesisleri ekle
-        if (!await context.Facilities.AnyAsync())
+        // ── 3. Varsayılan Kullanıcı ──
+        if (!await context.MilitaryIdentityUsers.AnyAsync())
         {
-            var orduevleri = await context.Orduevleri.ToListAsync();
-
-            var berberTemplate = await context.FacilityTemplates.FirstOrDefaultAsync(t => t.Name == "Berber");
-            var pideTemplate = await context.FacilityTemplates.FirstOrDefaultAsync(t => t.Name == "Pide Salonu");
-
-            if (berberTemplate != null && pideTemplate != null)
+            var testUser = new MilitaryIdentityUser
             {
-                foreach (var o in orduevleri)
-                {
-                    var berberFacility = new Facility
-                    {
-                        Id = Guid.NewGuid(),
-                        OrdueviId = o.Id,
-                        FacilityTemplateId = berberTemplate.Id,
-                        Name = "Erkek Berberi",
-                        IsAppointmentBased = true,
-                        OpeningTime = new TimeSpan(8, 30, 0),
-                        ClosingTime = new TimeSpan(17, 0, 0),
-                        SlotDurationInMinutes = 15,
-                        IsActive = true
-                    };
+                Id = Guid.NewGuid(),
+                IdentityNumber = "11223344556",
+                PasswordHash = HashPassword("password123"),
+                FirstName = "Test",
+                LastName = "Kullanıcı",
+                Relation = "Kendisi",
+                CreatedAtUtc = DateTime.UtcNow
+            };
 
-                    var pideFacility = new Facility
-                    {
-                        Id = Guid.NewGuid(),
-                        OrdueviId = o.Id,
-                        FacilityTemplateId = pideTemplate.Id,
-                        Name = "Açık Teras Pide Salonu",
-                        IsAppointmentBased = false,
-                        OpeningTime = new TimeSpan(11, 0, 0),
-                        ClosingTime = new TimeSpan(21, 0, 0),
-                        SlotDurationInMinutes = 0,
-                        IsActive = true
-                    };
-
-                    context.Facilities.AddRange(berberFacility, pideFacility);
-
-                    // Basit örnek hizmetler
-                    context.FacilityServices.AddRange(
-                        new FacilityService
-                        {
-                            Id = Guid.NewGuid(),
-                            FacilityId = berberFacility.Id,
-                            ServiceName = "Saç Kesimi",
-                            Price = 45.00m,
-                            EstimatedDurationInMinutes = 30,
-                            IsActive = true
-                        },
-                        new FacilityService
-                        {
-                            Id = Guid.NewGuid(),
-                            FacilityId = berberFacility.Id,
-                            ServiceName = "Saç & Sakal",
-                            Price = 60.00m,
-                            EstimatedDurationInMinutes = 30,
-                            IsActive = true
-                        },
-                        new FacilityService
-                        {
-                            Id = Guid.NewGuid(),
-                            FacilityId = pideFacility.Id,
-                            ServiceName = "Kıymalı Pide",
-                            Price = 85.00m,
-                            EstimatedDurationInMinutes = 0,
-                            IsActive = true
-                        },
-                        new FacilityService
-                        {
-                            Id = Guid.NewGuid(),
-                            FacilityId = pideFacility.Id,
-                            ServiceName = "Kuşbaşılı Pide",
-                            Price = 110.00m,
-                            EstimatedDurationInMinutes = 0,
-                            IsActive = true
-                        }
-                    );
-                }
-            }
+            context.MilitaryIdentityUsers.Add(testUser);
+            await context.SaveChangesAsync();
         }
+    }
 
-        await context.SaveChangesAsync();
+    private static string HashPassword(string password)
+    {
+        using var sha = SHA256.Create();
+        var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(password));
+        return Convert.ToHexString(bytes);
     }
 }
