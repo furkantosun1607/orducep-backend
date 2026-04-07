@@ -33,14 +33,6 @@ public class OrduevleriController : ControllerBase
         return Ok(orduevleri);
     }
 
-    public class CreateOrdueviRequest
-    {
-        public string Name { get; set; } = string.Empty;
-        public string Location { get; set; } = string.Empty;
-        public string Description { get; set; } = string.Empty;
-        public string ContactNumber { get; set; } = string.Empty;
-    }
-
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateOrdueviRequest request)
     {
@@ -60,46 +52,6 @@ public class OrduevleriController : ControllerBase
         };
 
         _context.Orduevleri.Add(orduevi);
-
-        // Varsayılan: Berber ve Kantin tesisleri
-        var berberTemplate = await _context.FacilityTemplates
-            .FirstOrDefaultAsync(t => t.Name == "Berber");
-
-        var kantinTemplate = await _context.FacilityTemplates
-            .FirstOrDefaultAsync(t => t.Name == "Kantin");
-
-        if (berberTemplate != null)
-        {
-            _context.Facilities.Add(new Facility
-            {
-                Id = Guid.NewGuid(),
-                OrdueviId = orduevi.Id,
-                FacilityTemplateId = berberTemplate.Id,
-                Name = "Erkek Berberi",
-                IsAppointmentBased = true,
-                OpeningTime = new TimeSpan(8, 30, 0),
-                ClosingTime = new TimeSpan(17, 0, 0),
-                SlotDurationInMinutes = 15,
-                IsActive = true
-            });
-        }
-
-        if (kantinTemplate != null)
-        {
-            _context.Facilities.Add(new Facility
-            {
-                Id = Guid.NewGuid(),
-                OrdueviId = orduevi.Id,
-                FacilityTemplateId = kantinTemplate.Id,
-                Name = "Kantin",
-                IsAppointmentBased = false,
-                OpeningTime = new TimeSpan(8, 0, 0),
-                ClosingTime = new TimeSpan(22, 0, 0),
-                SlotDurationInMinutes = 0,
-                IsActive = true
-            });
-        }
-
         await _context.SaveChangesAsync(HttpContext.RequestAborted);
 
         return Ok(new
@@ -130,3 +82,10 @@ public class OrduevleriController : ControllerBase
     }
 }
 
+public class CreateOrdueviRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public string Location { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string ContactNumber { get; set; } = string.Empty;
+}
