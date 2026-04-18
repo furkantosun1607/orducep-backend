@@ -1,0 +1,23 @@
+**/.classpath
+**/.dockerignore
+**/.env
+**/.git
+**/.gitignore
+**/.project
+**/.settings
+**/.toolstarget
+**/.vs
+**/.vscode
+**/*.*proj.user
+**/*.dbmdl
+**/*.jfm
+**/appsettings.Development.json
+**/bin
+**/obj
+**/secrets.json
+
+# If there are any other test projects or unrelated frontends we want to ignore
+**/test-frontend
+**/testfrontend
+**/.vite
+**/node_modules
