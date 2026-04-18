@@ -568,6 +568,95 @@ public class ReservationsController : ControllerBase
 
         return NoContent();
     }
+
+    /// <summary>
+    /// Tek bir hizmetin ad, fiyat ve süresini günceller.
+    /// </summary>
+    [HttpPut("facilities/{facilityId:guid}/services/{serviceId:guid}")]
+    public async Task<IActionResult> EditService(
+        Guid facilityId,
+        Guid serviceId,
+        [FromBody] EditServiceRequest request,
+        [FromServices] IApplicationDbContext context)
+    {
+        var service = await context.FacilityServices
+            .FirstOrDefaultAsync(s => s.Id == serviceId && s.FacilityId == facilityId);
+
+        if (service == null)
+            return NotFound(new { Message = "Hizmet bulunamadı." });
+
+        if (!string.IsNullOrWhiteSpace(request.ServiceName))
+            service.ServiceName = request.ServiceName.Trim();
+
+        if (request.Price.HasValue)
+            service.Price = request.Price.Value;
+
+        if (request.DurationMinutes.HasValue && request.DurationMinutes.Value > 0)
+            service.DurationMinutes = request.DurationMinutes.Value;
+
+        if (request.BufferMinutes.HasValue && request.BufferMinutes.Value >= 0)
+            service.BufferMinutes = request.BufferMinutes.Value;
+
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+
+        return Ok(new
+        {
+            id = service.Id,
+            serviceName = service.ServiceName,
+            price = service.Price,
+            durationMinutes = service.DurationMinutes,
+            bufferMinutes = service.BufferMinutes,
+            message = "Hizmet başarıyla güncellendi."
+        });
+    }
+
+    /// <summary>
+    /// Bir tesise toplu hizmet ekler. Gelen liste mevcut hizmetlere eklenir (UPSERT değil, append).
+    /// </summary>
+    [HttpPost("facilities/{facilityId:guid}/services/bulk")]
+    public async Task<IActionResult> AddServices(
+        Guid facilityId,
+        [FromBody] AddServicesRequest request,
+        [FromServices] IApplicationDbContext context)
+    {
+        var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
+        if (!facilityExists)
+            return NotFound(new { Message = "Tesis bulunamadı." });
+
+        if (request.Services == null || request.Services.Count == 0)
+            return BadRequest(new { Message = "En az bir hizmet gönderilmelidir." });
+
+        var newServices = request.Services
+            .Where(s => !string.IsNullOrWhiteSpace(s.ServiceName))
+            .Select(s => new FacilityService
+            {
+                Id = Guid.NewGuid(),
+                FacilityId = facilityId,
+                ServiceName = s.ServiceName!.Trim(),
+                Price = s.Price,
+                DurationMinutes = s.DurationMinutes > 0 ? s.DurationMinutes : 30,
+                BufferMinutes = s.BufferMinutes >= 0 ? s.BufferMinutes : 0,
+                IsActive = true
+            })
+            .ToList();
+
+        context.FacilityServices.AddRange(newServices);
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+
+        return Ok(new
+        {
+            added = newServices.Count,
+            services = newServices.Select(s => new
+            {
+                id = s.Id,
+                serviceName = s.ServiceName,
+                price = s.Price,
+                durationMinutes = s.DurationMinutes,
+                bufferMinutes = s.BufferMinutes
+            }),
+            message = $"{newServices.Count} hizmet başarıyla eklendi."
+        });
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -671,3 +760,27 @@ public class FacilityServiceItemDto
     public string? ServiceName { get; set; }
     public decimal Price { get; set; }
 }
+
+/// <summary>Tek bir hizmeti kısmen güncellemek için kullanılır. Gönderilmeyen alanlar değişmez.</summary>
+public class EditServiceRequest
+{
+    public string? ServiceName { get; set; }
+    public decimal? Price { get; set; }
+    public int? DurationMinutes { get; set; }
+    public int? BufferMinutes { get; set; }
+}
+
+/// <summary>Birden fazla hizmeti tek seferde eklemek için kullanılır.</summary>
+public class AddServicesRequest
+{
+    public List<NewServiceItemDto> Services { get; set; } = new();
+}
+
+public class NewServiceItemDto
+{
+    public string? ServiceName { get; set; }
+    public decimal Price { get; set; }
+    public int DurationMinutes { get; set; } = 30;
+    public int BufferMinutes { get; set; } = 0;
+}
+
