@@ -11,6 +11,9 @@ public class Orduevi
     // Yöneticisi olan kullanıcının ID'si
     public string AdminUserId { get; set; } = string.Empty;
 
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAt { get; set; }
+
     // Navigation Properties
     public ICollection<Facility> Facilities { get; set; } = new List<Facility>();
 }

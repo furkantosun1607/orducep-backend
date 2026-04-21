@@ -10,8 +10,11 @@ public class FacilityStaff
     public Guid FacilityId { get; set; }
     public Facility Facility { get; set; } = null!;
 
-    // Identity üzerinden gelecek Personel User ID (Sisteme login olan kişi)
-    public string UserId { get; set; } = string.Empty;
+    /// <summary>Personel görünen adı. Admin panelinden string olarak gelir.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    // Identity üzerinden gelecek Personel User ID (Opsiyonel — sisteme login olmayan personeller için null olabilir)
+    public string? UserId { get; set; }
 
     // Personel Rolü (Salt Görüntüleyici, Randevu Onaylayıcı vb)
     public FacilityRole Role { get; set; } = FacilityRole.Staff;

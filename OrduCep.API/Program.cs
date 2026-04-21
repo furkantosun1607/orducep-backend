@@ -26,6 +26,9 @@ using (var scope = app.Services.CreateScope())
     var dbContext = scope.ServiceProvider.GetRequiredService<OrduCepDbContext>();
     await dbContext.Database.EnsureCreatedAsync();
 
+    // Mevcut tablolara yeni kolonları ekle (EnsureCreated bunu yapmıyor)
+    await SchemaMigrator.RunAsync(dbContext);
+
     await SeedData.InitializeAsync(scope.ServiceProvider);
 }
 

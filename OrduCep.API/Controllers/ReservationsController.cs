@@ -238,6 +238,174 @@ public class ReservationsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Mevcut bir tesisin tüm bilgilerini günceller (Admin). 
+    /// Personel ve hizmet listeleri UPSERT/orphan-removal mantığıyla yönetilir.
+    /// </summary>
+    [HttpPut("facilities/{id:guid}")]
+    public async Task<IActionResult> UpdateFacility(
+        Guid id,
+        [FromBody] UpdateFacilityRequestDto request,
+        [FromServices] IApplicationDbContext context)
+    {
+        var facility = await context.Facilities
+            .Include(f => f.Services)
+            .Include(f => f.StaffMembers)
+            .FirstOrDefaultAsync(f => f.Id == id);
+
+        if (facility == null)
+            return NotFound(new { Message = "Tesis bulunamadı." });
+
+        // ── Temel alan güncellemeleri ──
+        if (!string.IsNullOrWhiteSpace(request.Name))
+            facility.Name = request.Name.Trim();
+
+        if (!string.IsNullOrWhiteSpace(request.Category))
+        {
+            if (Enum.TryParse<FacilityCategory>(request.Category, true, out var category))
+                facility.Category = category;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.AppointmentMode))
+        {
+            if (Enum.TryParse<AppointmentMode>(request.AppointmentMode, true, out var mode))
+                facility.AppointmentMode = mode;
+        }
+
+        if (request.MaxConcurrency.HasValue && request.MaxConcurrency.Value > 0)
+            facility.MaxConcurrency = request.MaxConcurrency.Value;
+
+        if (request.BufferMinutes.HasValue && request.BufferMinutes.Value >= 0)
+            facility.BufferMinutes = request.BufferMinutes.Value;
+
+        if (request.DefaultSlotDurationMinutes.HasValue && request.DefaultSlotDurationMinutes.Value > 0)
+            facility.DefaultSlotDurationMinutes = request.DefaultSlotDurationMinutes.Value;
+
+        if (!string.IsNullOrWhiteSpace(request.OpeningTime) &&
+            TimeSpan.TryParse(request.OpeningTime.Trim(), out var opening))
+            facility.OpeningTime = opening;
+
+        if (!string.IsNullOrWhiteSpace(request.ClosingTime) &&
+            TimeSpan.TryParse(request.ClosingTime.Trim(), out var closing))
+            facility.ClosingTime = closing;
+
+        if (request.Description != null)
+            facility.Description = request.Description.Trim();
+
+        if (request.Image != null)
+            facility.Image = request.Image; // Base64 string olarak saklanir
+
+        // ── Kapalı günler ──
+        if (request.Hours != null)
+        {
+            facility.ClosedDays = request.Hours.ClosedDays != null
+                ? string.Join(",", request.Hours.ClosedDays.Select(d => d.Trim()).Where(d => !string.IsNullOrEmpty(d)))
+                : string.Empty;
+        }
+
+        // ── Hizmetler: UPSERT + orphan removal ──
+        if (request.Services != null)
+        {
+            var incomingIds = request.Services
+                .Where(s => !string.IsNullOrWhiteSpace(s.Id))
+                .Select(s => Guid.Parse(s.Id!))
+                .ToHashSet();
+
+            // Orphan removal: DB'de var ama gelen listede olmayan hizmetleri sil
+            var toRemove = facility.Services
+                .Where(s => !incomingIds.Contains(s.Id))
+                .ToList();
+            context.FacilityServices.RemoveRange(toRemove);
+
+            foreach (var serviceDto in request.Services)
+            {
+                if (!string.IsNullOrWhiteSpace(serviceDto.Id) &&
+                    Guid.TryParse(serviceDto.Id, out var serviceGuid))
+                {
+                    // Güncelle (mevcut kayıt)
+                    var existing = facility.Services.FirstOrDefault(s => s.Id == serviceGuid);
+                    if (existing != null)
+                    {
+                        if (!string.IsNullOrWhiteSpace(serviceDto.ServiceName))
+                            existing.ServiceName = serviceDto.ServiceName.Trim();
+                        existing.Price = serviceDto.Price;
+                    }
+                }
+                else
+                {
+                    // Yeni kayıt ekle
+                    var newService = new FacilityService
+                    {
+                        Id = Guid.NewGuid(),
+                        FacilityId = facility.Id,
+                        ServiceName = serviceDto.ServiceName?.Trim() ?? string.Empty,
+                        Price = serviceDto.Price,
+                        DurationMinutes = 30,
+                        BufferMinutes = 0,
+                        IsActive = true
+                    };
+                    context.FacilityServices.Add(newService);
+                }
+            }
+        }
+
+        // ── Personel: tam değiştirme (replace-all) ──
+        if (request.Staff != null)
+        {
+            // Eski personelleri sil
+            context.FacilityStaffs.RemoveRange(facility.StaffMembers);
+
+            // Yeni personelleri ekle
+            foreach (var staffName in request.Staff.Where(s => !string.IsNullOrWhiteSpace(s)))
+            {
+                context.FacilityStaffs.Add(new FacilityStaff
+                {
+                    Id = Guid.NewGuid(),
+                    FacilityId = facility.Id,
+                    Name = staffName.Trim(),
+                    Role = OrduCep.Domain.Enums.FacilityRole.Staff
+                });
+            }
+        }
+
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+
+        // Yanıt için güncel hizmet ve personel listesini çek
+        var updatedServices = await context.FacilityServices
+            .Where(s => s.FacilityId == facility.Id && s.IsActive)
+            .Select(s => new { id = s.Id, serviceName = s.ServiceName, price = s.Price })
+            .ToListAsync();
+
+        var updatedStaff = await context.FacilityStaffs
+            .Where(s => s.FacilityId == facility.Id)
+            .Select(s => s.Name)
+            .ToListAsync();
+
+        var closedDaysList = string.IsNullOrEmpty(facility.ClosedDays)
+            ? new List<string>()
+            : facility.ClosedDays.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
+
+        return Ok(new
+        {
+            id = facility.Id,
+            ordueviId = facility.OrdueviId,
+            name = facility.Name,
+            category = facility.Category.ToString(),
+            appointmentMode = facility.AppointmentMode.ToString(),
+            maxConcurrency = facility.MaxConcurrency,
+            bufferMinutes = facility.BufferMinutes,
+            defaultSlotDurationMinutes = facility.DefaultSlotDurationMinutes,
+            openingTime = facility.OpeningTime.ToString(@"hh\:mm"),
+            closingTime = facility.ClosingTime.ToString(@"hh\:mm"),
+            description = facility.Description,
+            image = facility.Image,
+            staff = updatedStaff,
+            hours = new { closedDays = closedDaysList },
+            services = updatedServices,
+            message = "Tesis başarıyla güncellendi."
+        });
+    }
+
     // ──────────────────────────────────────────────
     //  KAYNAK (RESOURCE) YÖNETİMİ
     // ──────────────────────────────────────────────
@@ -400,6 +568,95 @@ public class ReservationsController : ControllerBase
 
         return NoContent();
     }
+
+    /// <summary>
+    /// Tek bir hizmetin ad, fiyat ve süresini günceller.
+    /// </summary>
+    [HttpPut("facilities/{facilityId:guid}/services/{serviceId:guid}")]
+    public async Task<IActionResult> EditService(
+        Guid facilityId,
+        Guid serviceId,
+        [FromBody] EditServiceRequest request,
+        [FromServices] IApplicationDbContext context)
+    {
+        var service = await context.FacilityServices
+            .FirstOrDefaultAsync(s => s.Id == serviceId && s.FacilityId == facilityId);
+
+        if (service == null)
+            return NotFound(new { Message = "Hizmet bulunamadı." });
+
+        if (!string.IsNullOrWhiteSpace(request.ServiceName))
+            service.ServiceName = request.ServiceName.Trim();
+
+        if (request.Price.HasValue)
+            service.Price = request.Price.Value;
+
+        if (request.DurationMinutes.HasValue && request.DurationMinutes.Value > 0)
+            service.DurationMinutes = request.DurationMinutes.Value;
+
+        if (request.BufferMinutes.HasValue && request.BufferMinutes.Value >= 0)
+            service.BufferMinutes = request.BufferMinutes.Value;
+
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+
+        return Ok(new
+        {
+            id = service.Id,
+            serviceName = service.ServiceName,
+            price = service.Price,
+            durationMinutes = service.DurationMinutes,
+            bufferMinutes = service.BufferMinutes,
+            message = "Hizmet başarıyla güncellendi."
+        });
+    }
+
+    /// <summary>
+    /// Bir tesise toplu hizmet ekler. Gelen liste mevcut hizmetlere eklenir (UPSERT değil, append).
+    /// </summary>
+    [HttpPost("facilities/{facilityId:guid}/services/bulk")]
+    public async Task<IActionResult> AddServices(
+        Guid facilityId,
+        [FromBody] AddServicesRequest request,
+        [FromServices] IApplicationDbContext context)
+    {
+        var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
+        if (!facilityExists)
+            return NotFound(new { Message = "Tesis bulunamadı." });
+
+        if (request.Services == null || request.Services.Count == 0)
+            return BadRequest(new { Message = "En az bir hizmet gönderilmelidir." });
+
+        var newServices = request.Services
+            .Where(s => !string.IsNullOrWhiteSpace(s.ServiceName))
+            .Select(s => new FacilityService
+            {
+                Id = Guid.NewGuid(),
+                FacilityId = facilityId,
+                ServiceName = s.ServiceName!.Trim(),
+                Price = s.Price,
+                DurationMinutes = s.DurationMinutes > 0 ? s.DurationMinutes : 30,
+                BufferMinutes = s.BufferMinutes >= 0 ? s.BufferMinutes : 0,
+                IsActive = true
+            })
+            .ToList();
+
+        context.FacilityServices.AddRange(newServices);
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+
+        return Ok(new
+        {
+            added = newServices.Count,
+            services = newServices.Select(s => new
+            {
+                id = s.Id,
+                serviceName = s.ServiceName,
+                price = s.Price,
+                durationMinutes = s.DurationMinutes,
+                bufferMinutes = s.BufferMinutes
+            }),
+            message = $"{newServices.Count} hizmet başarıyla eklendi."
+        });
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -456,3 +713,74 @@ public class CreateServiceRequest
     public int DurationMinutes { get; set; } = 30;
     public int BufferMinutes { get; set; } = 0;
 }
+
+// ── Admin Panel Güncelleme DTO'ları ──
+
+public class UpdateFacilityRequestDto
+{
+    public string? Name { get; set; }
+    public string? Category { get; set; }
+
+    /// <summary>'WalkIn' veya 'Appointment' (AppointmentMode enum string'i)</summary>
+    public string? AppointmentMode { get; set; }
+
+    public int? MaxConcurrency { get; set; }
+    public int? BufferMinutes { get; set; }
+    public int? DefaultSlotDurationMinutes { get; set; }
+
+    /// <summary>Örn: "09:00", "18:00" formatlarında</summary>
+    public string? OpeningTime { get; set; }
+    public string? ClosingTime { get; set; }
+
+    public string? Description { get; set; }
+
+    /// <summary>Fotoğraf base64 string olarak iletiliyor (örn: data:image/png;base64,iVBO...)</summary>
+    public string? Image { get; set; }
+
+    /// <summary>Tesisin personelleri — sadece isim listesi</summary>
+    public List<string>? Staff { get; set; }
+
+    /// <summary>Çalışma saatleri ve kapalı günler</summary>
+    public FacilityHoursDto? Hours { get; set; }
+
+    /// <summary>Tesiste verilen alt hizmetler ve fiyatları</summary>
+    public List<FacilityServiceItemDto>? Services { get; set; }
+}
+
+public class FacilityHoursDto
+{
+    /// <summary>Örn: ["Pzt", "Sal", "Cmt", "Paz"]</summary>
+    public List<string>? ClosedDays { get; set; }
+}
+
+public class FacilityServiceItemDto
+{
+    /// <summary>Var olan bir servisi güncellerken dolu gelir; yeni eklenen servis için null/boş gelir.</summary>
+    public string? Id { get; set; }
+    public string? ServiceName { get; set; }
+    public decimal Price { get; set; }
+}
+
+/// <summary>Tek bir hizmeti kısmen güncellemek için kullanılır. Gönderilmeyen alanlar değişmez.</summary>
+public class EditServiceRequest
+{
+    public string? ServiceName { get; set; }
+    public decimal? Price { get; set; }
+    public int? DurationMinutes { get; set; }
+    public int? BufferMinutes { get; set; }
+}
+
+/// <summary>Birden fazla hizmeti tek seferde eklemek için kullanılır.</summary>
+public class AddServicesRequest
+{
+    public List<NewServiceItemDto> Services { get; set; } = new();
+}
+
+public class NewServiceItemDto
+{
+    public string? ServiceName { get; set; }
+    public decimal Price { get; set; }
+    public int DurationMinutes { get; set; } = 30;
+    public int BufferMinutes { get; set; } = 0;
+}
+

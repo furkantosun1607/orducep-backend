@@ -51,6 +51,12 @@ public class Facility
     /// <summary>İkon adı (frontend için)</summary>
     public string Icon { get; set; } = "default-icon";
 
+    /// <summary>Fotoğraf (Base64 encoded string). Örn: data:image/jpeg;base64,/9j/4AA...</summary>
+    public string? Image { get; set; }
+
+    /// <summary>Kapalı günler (virgülle ayrılmış). Örn: "Pzt,Sal,Cmt,Paz"</summary>
+    public string ClosedDays { get; set; } = string.Empty;
+
     // Navigation Properties
     public ICollection<Resource> Resources { get; set; } = new List<Resource>();
     public ICollection<FacilityStaff> StaffMembers { get; set; } = new List<FacilityStaff>();
