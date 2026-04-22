@@ -4,7 +4,7 @@ using OrduCep.API;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Tüm servisleri sisteme kayıt ediyoruz
+// Tüm servisleri sisteme kayıt
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
