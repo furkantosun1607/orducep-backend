@@ -131,7 +131,7 @@ public class OrduevleriController : ControllerBase
 
         return NoContent();
     }
-}
+
     // 2. Bir orduevinin hizmetlerinin (facility) appointmentmodunu çeken endpoint
     [HttpGet("{ordueviId:guid}/facilities/{facilityId:guid}/appointment-mode")]
     public async Task<IActionResult> GetFacilityAppointmentMode(Guid ordueviId, Guid facilityId)
@@ -144,7 +144,7 @@ public class OrduevleriController : ControllerBase
 
     // 3. Bir orduevine yeni facility eklenmesi
     [HttpPost("{ordueviId:guid}/facilities")]
-    public async Task<IActionResult> CreateFacility(Guid ordueviId, [FromBody] CreateFacilityRequest request)
+    public async Task<IActionResult> CreateFacility(Guid ordueviId, [FromBody] OrdueviCreateFacilityRequest request)
     {
         var ordueviExists = await _context.Orduevleri.AnyAsync(o => o.Id == ordueviId);
         if (!ordueviExists) return NotFound(new { Message = "Orduevi bulunamadı." });
@@ -205,7 +205,7 @@ public class OrduevleriController : ControllerBase
 
     // 7. FacilityService ekleme endpointi
     [HttpPost("{ordueviId:guid}/facilities/{facilityId:guid}/services")]
-    public async Task<IActionResult> CreateFacilityService(Guid ordueviId, Guid facilityId, [FromBody] CreateFacilityServiceRequest request)
+    public async Task<IActionResult> CreateFacilityService(Guid ordueviId, Guid facilityId, [FromBody] OrdueviCreateFacilityServiceRequest request)
     {
         var facilityExists = await _context.Facilities.AnyAsync(f => f.OrdueviId == ordueviId && f.Id == facilityId);
         if (!facilityExists) return NotFound(new { Message = "Tesis bulunamadı." });
@@ -262,7 +262,7 @@ public class UpdateOrdueviRequest
     public string? ContactNumber { get; set; }
 }
 
-public class CreateFacilityRequest
+public class OrdueviCreateFacilityRequest
 {
     public string Name { get; set; } = string.Empty;
     public AppointmentMode AppointmentMode { get; set; }
@@ -274,7 +274,7 @@ public class CreateFacilityRequest
     public string ClosedTimes { get; set; } = string.Empty;
 }
 
-public class CreateFacilityServiceRequest
+public class OrdueviCreateFacilityServiceRequest
 {
     public string ServiceName { get; set; } = string.Empty;
     public decimal Price { get; set; }
