@@ -1,8 +1,11 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using OrduCep.API.Services;
 using OrduCep.Application.Interfaces;
 using OrduCep.Domain.Entities;
 using OrduCep.Domain.Enums;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace OrduCep.API.Controllers;
 
@@ -11,10 +14,12 @@ namespace OrduCep.API.Controllers;
 public class OrduevleriController : ControllerBase
 {
     private readonly IApplicationDbContext _context;
+    private readonly IGooglePlacesService _googlePlaces;
 
-    public OrduevleriController(IApplicationDbContext context)
+    public OrduevleriController(IApplicationDbContext context, IGooglePlacesService googlePlaces)
     {
         _context = context;
+        _googlePlaces = googlePlaces;
     }
 
     [HttpGet]
@@ -71,6 +76,152 @@ public class OrduevleriController : ControllerBase
         return orduevi == null
             ? NotFound(new { Message = "Orduevi bulunamadı." })
             : Ok(orduevi);
+    }
+
+    [HttpGet("{id:guid}/google-maps")]
+    public async Task<IActionResult> GetGoogleMapsDetails(Guid id)
+    {
+        var orduevi = await _context.Orduevleri.FirstOrDefaultAsync(o => o.Id == id);
+        if (orduevi == null)
+            return NotFound(new { Message = "Orduevi bulunamadı." });
+
+        try
+        {
+            var placeId = ReadGooglePlaceId(orduevi.ScrapedMetadataJson);
+
+            if (string.IsNullOrWhiteSpace(placeId))
+            {
+                var match = await _googlePlaces.FindPlaceIdAsync(orduevi, HttpContext.RequestAborted);
+                placeId = match?.PlaceId;
+            }
+
+            if (string.IsNullOrWhiteSpace(placeId))
+                return NotFound(new { Message = "Google Maps eşleşmesi bulunamadı." });
+
+            var details = await _googlePlaces.GetPlaceDetailsAsync(placeId, HttpContext.RequestAborted);
+            return details == null
+                ? NotFound(new { Message = "Google Maps detayı bulunamadı." })
+                : Ok(details);
+        }
+        catch (InvalidOperationException ex) when (!_googlePlaces.IsConfigured)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
+        }
+    }
+
+    [HttpPost("{id:guid}/google-maps/sync-place-id")]
+    public async Task<IActionResult> SyncGooglePlaceId(Guid id, [FromQuery] bool force = false)
+    {
+        var orduevi = await _context.Orduevleri.FirstOrDefaultAsync(o => o.Id == id);
+        if (orduevi == null)
+            return NotFound(new { Message = "Orduevi bulunamadı." });
+
+        try
+        {
+            var existingPlaceId = ReadGooglePlaceId(orduevi.ScrapedMetadataJson);
+            if (!force && !string.IsNullOrWhiteSpace(existingPlaceId))
+            {
+                return Ok(new
+                {
+                    orduevi.Id,
+                    orduevi.Name,
+                    status = "skipped",
+                    placeId = existingPlaceId
+                });
+            }
+
+            var match = await _googlePlaces.FindPlaceIdAsync(orduevi, HttpContext.RequestAborted);
+            if (match == null)
+                return NotFound(new { orduevi.Id, orduevi.Name, status = "not_found" });
+
+            orduevi.ScrapedMetadataJson = WriteGooglePlaceId(orduevi.ScrapedMetadataJson, match);
+            orduevi.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync(HttpContext.RequestAborted);
+
+            return Ok(new
+            {
+                orduevi.Id,
+                orduevi.Name,
+                status = "matched",
+                placeId = match.PlaceId
+            });
+        }
+        catch (InvalidOperationException ex) when (!_googlePlaces.IsConfigured)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
+        }
+    }
+
+    [HttpPost("google-maps/sync-place-ids")]
+    public async Task<IActionResult> SyncGooglePlaceIds([FromQuery] bool force = false, [FromQuery] int limit = 0)
+    {
+        try
+        {
+            IQueryable<Orduevi> query = _context.Orduevleri.OrderBy(o => o.Name);
+
+            if (limit > 0)
+                query = query.Take(Math.Min(limit, 500));
+
+            var orduevleri = await query.ToListAsync();
+            var results = new List<object>();
+            var matched = 0;
+            var skipped = 0;
+            var notFound = 0;
+
+            foreach (var orduevi in orduevleri)
+            {
+                var existingPlaceId = ReadGooglePlaceId(orduevi.ScrapedMetadataJson);
+                if (!force && !string.IsNullOrWhiteSpace(existingPlaceId))
+                {
+                    skipped++;
+                    results.Add(new
+                    {
+                        orduevi.Id,
+                        orduevi.Name,
+                        status = "skipped",
+                        placeId = existingPlaceId
+                    });
+                    continue;
+                }
+
+                var match = await _googlePlaces.FindPlaceIdAsync(orduevi, HttpContext.RequestAborted);
+                if (match == null)
+                {
+                    notFound++;
+                    results.Add(new { orduevi.Id, orduevi.Name, status = "not_found" });
+                    continue;
+                }
+
+                orduevi.ScrapedMetadataJson = WriteGooglePlaceId(orduevi.ScrapedMetadataJson, match);
+                orduevi.UpdatedAt = DateTime.UtcNow;
+                matched++;
+
+                results.Add(new
+                {
+                    orduevi.Id,
+                    orduevi.Name,
+                    status = "matched",
+                    placeId = match.PlaceId
+                });
+            }
+
+            if (matched > 0)
+                await _context.SaveChangesAsync(HttpContext.RequestAborted);
+
+            return Ok(new
+            {
+                total = results.Count,
+                matched,
+                skipped,
+                notFound,
+                results
+            });
+        }
+        catch (InvalidOperationException ex) when (!_googlePlaces.IsConfigured)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
+        }
     }
 
     [HttpPost]
@@ -205,6 +356,61 @@ public class OrduevleriController : ControllerBase
 
         return NoContent();
     }
+
+    private static string? ReadGooglePlaceId(string metadataJson)
+    {
+        if (string.IsNullOrWhiteSpace(metadataJson))
+            return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(metadataJson);
+            if (!document.RootElement.TryGetProperty("googleMaps", out var googleMaps))
+                return null;
+
+            return googleMaps.TryGetProperty("placeId", out var placeId) && placeId.ValueKind == JsonValueKind.String
+                ? placeId.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string WriteGooglePlaceId(string metadataJson, GooglePlaceMatchResult match)
+    {
+        JsonObject root;
+
+        if (string.IsNullOrWhiteSpace(metadataJson))
+        {
+            root = new JsonObject();
+        }
+        else
+        {
+            try
+            {
+                root = JsonNode.Parse(metadataJson) as JsonObject
+                    ?? new JsonObject { ["legacyMetadata"] = metadataJson };
+            }
+            catch (JsonException)
+            {
+                root = new JsonObject { ["legacyMetadata"] = metadataJson };
+            }
+        }
+
+        root["googleMaps"] = new JsonObject
+        {
+            ["placeId"] = match.PlaceId,
+            ["placeResourceName"] = match.ResourceName,
+            ["placeIdQuery"] = match.Query,
+            ["placeIdMatchedAtUtc"] = DateTime.UtcNow.ToString("O"),
+            ["contentStoragePolicy"] = "Only placeId is persisted; reviews and photos are fetched live from Places API."
+        };
+
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+    }
+
     // 2. Bir orduevinin hizmetlerinin (facility) appointmentmodunu çeken endpoint
     [HttpGet("{ordueviId:guid}/facilities/{facilityId:guid}/appointment-mode")]
     public async Task<IActionResult> GetFacilityAppointmentMode(Guid ordueviId, Guid facilityId)
