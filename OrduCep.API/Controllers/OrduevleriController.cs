@@ -29,12 +29,48 @@ public class OrduevleriController : ControllerBase
                 description = o.Description,
                 contactNumber = o.ContactNumber,
                 address = o.Address,
+                scrapedSourceId = o.ScrapedSourceId,
+                slug = o.Slug,
+                sourceUrl = o.SourceUrl,
+                featuredImageUrl = o.FeaturedImageUrl,
+                featuredImageLocalPath = o.FeaturedImageLocalPath,
+                amenities = o.Amenities,
                 createdAt = o.CreatedAt,
                 updatedAt = o.UpdatedAt
             })
             .ToListAsync();
 
         return Ok(orduevleri);
+    }
+
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetById(Guid id)
+    {
+        var orduevi = await _context.Orduevleri
+            .Where(o => o.Id == id)
+            .Select(o => new
+            {
+                id = o.Id,
+                name = o.Name,
+                location = o.Address,
+                description = o.Description,
+                contactNumber = o.ContactNumber,
+                address = o.Address,
+                scrapedSourceId = o.ScrapedSourceId,
+                slug = o.Slug,
+                sourceUrl = o.SourceUrl,
+                featuredImageUrl = o.FeaturedImageUrl,
+                featuredImageLocalPath = o.FeaturedImageLocalPath,
+                amenities = o.Amenities,
+                scrapedMetadataJson = o.ScrapedMetadataJson,
+                createdAt = o.CreatedAt,
+                updatedAt = o.UpdatedAt
+            })
+            .FirstOrDefaultAsync();
+
+        return orduevi == null
+            ? NotFound(new { Message = "Orduevi bulunamadı." })
+            : Ok(orduevi);
     }
 
     [HttpPost]
@@ -52,6 +88,12 @@ public class OrduevleriController : ControllerBase
             Address = request.Address.Trim(),
             Description = request.Description?.Trim() ?? string.Empty,
             ContactNumber = request.ContactNumber?.Trim() ?? string.Empty,
+            Slug = request.Slug?.Trim() ?? string.Empty,
+            SourceUrl = request.SourceUrl?.Trim() ?? string.Empty,
+            FeaturedImageUrl = request.FeaturedImageUrl?.Trim() ?? string.Empty,
+            FeaturedImageLocalPath = request.FeaturedImageLocalPath?.Trim() ?? string.Empty,
+            Amenities = request.Amenities?.Trim() ?? string.Empty,
+            ScrapedMetadataJson = request.ScrapedMetadataJson?.Trim() ?? string.Empty,
             AdminUserId = "admin-123",
             CreatedAt = DateTime.UtcNow
         };
@@ -67,6 +109,13 @@ public class OrduevleriController : ControllerBase
             description = orduevi.Description,
             contactNumber = orduevi.ContactNumber,
             address = orduevi.Address,
+            scrapedSourceId = orduevi.ScrapedSourceId,
+            slug = orduevi.Slug,
+            sourceUrl = orduevi.SourceUrl,
+            featuredImageUrl = orduevi.FeaturedImageUrl,
+            featuredImageLocalPath = orduevi.FeaturedImageLocalPath,
+            amenities = orduevi.Amenities,
+            scrapedMetadataJson = orduevi.ScrapedMetadataJson,
             createdAt = orduevi.CreatedAt,
             updatedAt = orduevi.UpdatedAt
         });
@@ -97,6 +146,24 @@ public class OrduevleriController : ControllerBase
         if (request.ContactNumber != null)
             orduevi.ContactNumber = request.ContactNumber.Trim();
 
+        if (request.Slug != null)
+            orduevi.Slug = request.Slug.Trim();
+
+        if (request.SourceUrl != null)
+            orduevi.SourceUrl = request.SourceUrl.Trim();
+
+        if (request.FeaturedImageUrl != null)
+            orduevi.FeaturedImageUrl = request.FeaturedImageUrl.Trim();
+
+        if (request.FeaturedImageLocalPath != null)
+            orduevi.FeaturedImageLocalPath = request.FeaturedImageLocalPath.Trim();
+
+        if (request.Amenities != null)
+            orduevi.Amenities = request.Amenities.Trim();
+
+        if (request.ScrapedMetadataJson != null)
+            orduevi.ScrapedMetadataJson = request.ScrapedMetadataJson.Trim();
+
         orduevi.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(HttpContext.RequestAborted);
@@ -109,6 +176,13 @@ public class OrduevleriController : ControllerBase
             description = orduevi.Description,
             contactNumber = orduevi.ContactNumber,
             address = orduevi.Address,
+            scrapedSourceId = orduevi.ScrapedSourceId,
+            slug = orduevi.Slug,
+            sourceUrl = orduevi.SourceUrl,
+            featuredImageUrl = orduevi.FeaturedImageUrl,
+            featuredImageLocalPath = orduevi.FeaturedImageLocalPath,
+            amenities = orduevi.Amenities,
+            scrapedMetadataJson = orduevi.ScrapedMetadataJson,
             createdAt = orduevi.CreatedAt,
             updatedAt = orduevi.UpdatedAt,
             message = "Orduevi bilgileri başarıyla güncellendi."
@@ -131,7 +205,6 @@ public class OrduevleriController : ControllerBase
 
         return NoContent();
     }
-}
     // 2. Bir orduevinin hizmetlerinin (facility) appointmentmodunu çeken endpoint
     [HttpGet("{ordueviId:guid}/facilities/{facilityId:guid}/appointment-mode")]
     public async Task<IActionResult> GetFacilityAppointmentMode(Guid ordueviId, Guid facilityId)
@@ -144,7 +217,7 @@ public class OrduevleriController : ControllerBase
 
     // 3. Bir orduevine yeni facility eklenmesi
     [HttpPost("{ordueviId:guid}/facilities")]
-    public async Task<IActionResult> CreateFacility(Guid ordueviId, [FromBody] CreateFacilityRequest request)
+    public async Task<IActionResult> CreateFacility(Guid ordueviId, [FromBody] CreateOrdueviFacilityRequest request)
     {
         var ordueviExists = await _context.Orduevleri.AnyAsync(o => o.Id == ordueviId);
         if (!ordueviExists) return NotFound(new { Message = "Orduevi bulunamadı." });
@@ -249,6 +322,12 @@ public class CreateOrdueviRequest
     public string Description { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
     public string ContactNumber { get; set; } = string.Empty;
+    public string? Slug { get; set; }
+    public string? SourceUrl { get; set; }
+    public string? FeaturedImageUrl { get; set; }
+    public string? FeaturedImageLocalPath { get; set; }
+    public string? Amenities { get; set; }
+    public string? ScrapedMetadataJson { get; set; }
 }
 
 public class UpdateOrdueviRequest
@@ -260,9 +339,15 @@ public class UpdateOrdueviRequest
     public string? Address { get; set; }
     public string? Description { get; set; }
     public string? ContactNumber { get; set; }
+    public string? Slug { get; set; }
+    public string? SourceUrl { get; set; }
+    public string? FeaturedImageUrl { get; set; }
+    public string? FeaturedImageLocalPath { get; set; }
+    public string? Amenities { get; set; }
+    public string? ScrapedMetadataJson { get; set; }
 }
 
-public class CreateFacilityRequest
+public class CreateOrdueviFacilityRequest
 {
     public string Name { get; set; } = string.Empty;
     public AppointmentMode AppointmentMode { get; set; }
