@@ -144,9 +144,11 @@ public class ReservationsController : ControllerBase
     {
         var facilities = await context.Facilities
             .Where(f => f.OrdueviId == ordueviId && f.IsActive)
+            .OrderBy(f => f.Name)
             .Select(f => new
             {
                 f.Id,
+                f.OrdueviId,
                 f.Name,
                 Category = f.Category.ToString(),
                 AppointmentMode = f.AppointmentMode.ToString(),
@@ -156,7 +158,10 @@ public class ReservationsController : ControllerBase
                 f.OpeningTime,
                 f.ClosingTime,
                 f.Description,
-                f.Icon
+                f.Icon,
+                f.Image,
+                f.IsActive,
+                f.ClosedDays
             })
             .ToListAsync();
 
@@ -783,4 +788,3 @@ public class NewServiceItemDto
     public int DurationMinutes { get; set; } = 30;
     public int BufferMinutes { get; set; } = 0;
 }
-

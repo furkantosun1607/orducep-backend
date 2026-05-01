@@ -24,6 +24,54 @@ public static class SeedData
         string FeaturedImageLocalPath,
         string RawJson);
 
+    private sealed record AmenityFacilityTemplate(
+        string Name,
+        string Description,
+        FacilityCategory Category,
+        AppointmentMode AppointmentMode,
+        int MaxConcurrency,
+        int BufferMinutes,
+        int DefaultSlotDurationMinutes,
+        TimeSpan OpeningTime,
+        TimeSpan ClosingTime,
+        string Icon,
+        string[] Keywords);
+
+    private static readonly AmenityFacilityTemplate[] AmenityFacilityTemplates =
+    {
+        new("Konaklama", "Bu tesiste konaklama hizmeti sunulmaktadır.", FacilityCategory.SpaceBased, AppointmentMode.AppointmentOnly, 20, 0, 1440, new TimeSpan(14, 0, 0), new TimeSpan(12, 0, 0), "bed", new[] { "konaklama", "misafirhane", "misafirhanesi" }),
+        new("Restoran", "Tesisin yeme-içme birimi.", FacilityCategory.CapacityBased, AppointmentMode.Mixed, 40, 10, 60, new TimeSpan(8, 0, 0), new TimeSpan(22, 0, 0), "utensils", new[] { "restoran", "restorani", "yemek salonu", "yemekhane", "lokanta", "lokantasi" }),
+        new("Izgara Salonu", "Izgara ve sıcak yemek servisi sunan salon.", FacilityCategory.CapacityBased, AppointmentMode.Mixed, 20, 10, 60, new TimeSpan(11, 0, 0), new TimeSpan(22, 0, 0), "flame", new[] { "izgara", "ızgara", "grill" }),
+        new("Pide-Lahmacun Salonu", "Pide ve lahmacun servisi bulunan yeme-içme birimi.", FacilityCategory.CapacityBased, AppointmentMode.Mixed, 16, 10, 60, new TimeSpan(11, 0, 0), new TimeSpan(21, 0, 0), "pizza", new[] { "pide", "lahmacun" }),
+        new("Fast-food", "Hızlı servis yiyecek birimi.", FacilityCategory.CapacityBased, AppointmentMode.WalkInOnly, 20, 0, 30, new TimeSpan(10, 0, 0), new TimeSpan(22, 0, 0), "sandwich", new[] { "fast food", "fastfood" }),
+        new("Kafeterya", "Kafeterya ve dinlenme alanı.", FacilityCategory.CapacityBased, AppointmentMode.WalkInOnly, 30, 0, 45, new TimeSpan(8, 0, 0), new TimeSpan(22, 0, 0), "coffee", new[] { "kafeterya", "kafe", "cafe" }),
+        new("Pastane", "Pastane ve tatlı servisi.", FacilityCategory.CapacityBased, AppointmentMode.WalkInOnly, 20, 0, 45, new TimeSpan(8, 0, 0), new TimeSpan(22, 0, 0), "cake", new[] { "pastane", "acik pastane", "kapali pastane" }),
+        new("Bar", "Sosyal içecek servisi alanı.", FacilityCategory.SpaceBased, AppointmentMode.WalkInOnly, 20, 0, 60, new TimeSpan(16, 0, 0), new TimeSpan(23, 0, 0), "glass", new[] { "bar" }),
+        new("Düğün Salonu", "Düğün, davet ve organizasyon salonu.", FacilityCategory.SpaceBased, AppointmentMode.AppointmentOnly, 1, 60, 240, new TimeSpan(10, 0, 0), new TimeSpan(23, 0, 0), "party", new[] { "dugun salonu", "dugun" }),
+        new("Toplantı Salonu", "Toplantı ve organizasyonlar için ayrılmış salon.", FacilityCategory.SpaceBased, AppointmentMode.AppointmentOnly, 4, 30, 120, new TimeSpan(9, 0, 0), new TimeSpan(18, 0, 0), "presentation", new[] { "toplanti salonu", "toplanti salonlari", "konferans salonu", "organizasyonlar duzenlemek" }),
+        new("Berber", "Berber hizmetleri.", FacilityCategory.TimeBased, AppointmentMode.AppointmentOnly, 2, 5, 30, new TimeSpan(9, 0, 0), new TimeSpan(18, 0, 0), "scissors", new[] { "berber" }),
+        new("Kuaför", "Kuaför hizmetleri.", FacilityCategory.TimeBased, AppointmentMode.AppointmentOnly, 2, 5, 45, new TimeSpan(9, 0, 0), new TimeSpan(18, 0, 0), "sparkles", new[] { "kuafor", "kuaforu", "kadin kuaforu", "erkek kuaforu" }),
+        new("Hamam", "Hamam hizmeti.", FacilityCategory.TimeBased, AppointmentMode.Mixed, 8, 15, 60, new TimeSpan(9, 0, 0), new TimeSpan(21, 0, 0), "bath", new[] { "hamam" }),
+        new("Sauna", "Sauna kullanım alanı.", FacilityCategory.TimeBased, AppointmentMode.Mixed, 6, 15, 45, new TimeSpan(9, 0, 0), new TimeSpan(21, 0, 0), "waves", new[] { "sauna" }),
+        new("Termal Banyo", "Termal banyo hizmeti.", FacilityCategory.TimeBased, AppointmentMode.Mixed, 6, 15, 60, new TimeSpan(9, 0, 0), new TimeSpan(21, 0, 0), "hot-springs", new[] { "termal banyo" }),
+        new("Termal Havuz", "Termal havuz kullanım alanı.", FacilityCategory.CapacityBased, AppointmentMode.Mixed, 20, 15, 90, new TimeSpan(9, 0, 0), new TimeSpan(21, 0, 0), "pool", new[] { "termal havuz" }),
+        new("Spor Salonu", "Spor salonu ve fitness alanı.", FacilityCategory.TimeBased, AppointmentMode.Mixed, 12, 10, 60, new TimeSpan(7, 0, 0), new TimeSpan(22, 0, 0), "dumbbell", new[] { "spor salonu", "fitness salonu", "fitness" }),
+        new("Spor Alanı", "Açık veya kapalı spor alanı.", FacilityCategory.CapacityBased, AppointmentMode.Mixed, 20, 10, 60, new TimeSpan(8, 0, 0), new TimeSpan(22, 0, 0), "activity", new[] { "spor alani", "hali saha", "hali sahalar", "basketbol sahasi", "basketbol sahalari", "futbol sahasi", "futbol sahalari" }),
+        new("Yüzme Havuzu", "Yüzme havuzu kullanım alanı.", FacilityCategory.CapacityBased, AppointmentMode.Mixed, 30, 15, 90, new TimeSpan(9, 0, 0), new TimeSpan(20, 0, 0), "pool", new[] { "yuzme havuzu", "olimpik" }),
+        new("Çocuk Havuzu", "Çocuklar için havuz alanı.", FacilityCategory.CapacityBased, AppointmentMode.WalkInOnly, 20, 0, 60, new TimeSpan(9, 0, 0), new TimeSpan(20, 0, 0), "child-pool", new[] { "cocuk havuzu" }),
+        new("Tenis Kortu", "Tenis kortu kullanım alanı.", FacilityCategory.SpaceBased, AppointmentMode.AppointmentOnly, 2, 15, 60, new TimeSpan(8, 0, 0), new TimeSpan(22, 0, 0), "tennis", new[] { "tenis kortu", "tenis kortlari" }),
+        new("Mini Golf", "Mini golf alanı.", FacilityCategory.SpaceBased, AppointmentMode.Mixed, 6, 10, 60, new TimeSpan(9, 0, 0), new TimeSpan(20, 0, 0), "golf", new[] { "mini golf" }),
+        new("Oyun Salonu", "Bilardo, tavla veya oyun alanı.", FacilityCategory.SpaceBased, AppointmentMode.WalkInOnly, 20, 0, 60, new TimeSpan(9, 0, 0), new TimeSpan(22, 0, 0), "gamepad", new[] { "oyun salonu", "bilardo", "playstation", "tavla" }),
+        new("Çocuk Oyun Alanı", "Çocuklar için oyun alanı.", FacilityCategory.SpaceBased, AppointmentMode.WalkInOnly, 20, 0, 60, new TimeSpan(9, 0, 0), new TimeSpan(21, 0, 0), "baby", new[] { "cocuk oyun alani" }),
+        new("Okuma Salonu", "Okuma ve dinlenme salonu.", FacilityCategory.SpaceBased, AppointmentMode.WalkInOnly, 12, 0, 60, new TimeSpan(9, 0, 0), new TimeSpan(22, 0, 0), "book-open", new[] { "okuma salonu" }),
+        new("Market", "Market ve alışveriş birimi.", FacilityCategory.CapacityBased, AppointmentMode.WalkInOnly, 10, 0, 30, new TimeSpan(9, 0, 0), new TimeSpan(21, 0, 0), "shopping-bag", new[] { "market", "mini market", "alisveris birimi" }),
+        new("Kuru Temizleme", "Kuru temizleme hizmeti.", FacilityCategory.TimeBased, AppointmentMode.Mixed, 2, 5, 30, new TimeSpan(9, 0, 0), new TimeSpan(18, 0, 0), "shirt", new[] { "kuru temizleme" }),
+        new("Terzi", "Terzi hizmeti.", FacilityCategory.TimeBased, AppointmentMode.Mixed, 2, 5, 30, new TimeSpan(9, 0, 0), new TimeSpan(18, 0, 0), "needle", new[] { "terzi" }),
+        new("Araç Yıkama", "Araç yıkama hizmeti.", FacilityCategory.TimeBased, AppointmentMode.Mixed, 3, 10, 45, new TimeSpan(9, 0, 0), new TimeSpan(18, 0, 0), "car", new[] { "arac yikama", "oto yikama" }),
+        new("Özel Plaj", "Plaj kullanım alanı.", FacilityCategory.CapacityBased, AppointmentMode.WalkInOnly, 40, 0, 120, new TimeSpan(9, 0, 0), new TimeSpan(20, 0, 0), "umbrella", new[] { "ozel plaj", "plaj yakinligi" }),
+        new("Su Sporları", "Su sporları etkinlik alanı.", FacilityCategory.SpaceBased, AppointmentMode.AppointmentOnly, 8, 15, 60, new TimeSpan(9, 0, 0), new TimeSpan(20, 0, 0), "sailboat", new[] { "su sporlari" })
+    };
+
     private static string[] SplitCsvLine(string line)
     {
         var result = new List<string>();
@@ -236,6 +284,8 @@ public static class SeedData
             await context.SaveChangesAsync();
         }
 
+        await SyncFacilitiesFromAmenitiesAsync(context);
+
         // ── 3. Varsayılan Kullanıcı ──
         if (!await context.MilitaryIdentityUsers.AnyAsync())
         {
@@ -311,6 +361,89 @@ public static class SeedData
             await context.SaveChangesAsync();
 
         Console.WriteLine($"[SeedData] scraped_data importu tamamlandı. Okunan: {imported}, eklenen: {added}, güncellenen: {updated}.");
+    }
+
+    private static async Task SyncFacilitiesFromAmenitiesAsync(OrduCepDbContext context)
+    {
+        var orduevleri = await context.Orduevleri
+            .Include(o => o.Facilities)
+            .ToListAsync();
+
+        var added = 0;
+
+        foreach (var orduevi in orduevleri)
+        {
+            var searchableText = NormalizeText(string.Join(' ',
+                orduevi.Name,
+                orduevi.Amenities,
+                orduevi.Description,
+                orduevi.ScrapedMetadataJson));
+
+            if (string.IsNullOrWhiteSpace(searchableText))
+                continue;
+
+            var existingFacilities = orduevi.Facilities.ToList();
+
+            foreach (var template in AmenityFacilityTemplates)
+            {
+                if (!TemplateMatches(searchableText, template))
+                    continue;
+
+                if (existingFacilities.Any(f => FacilityLooksLikeTemplate(f, template)))
+                    continue;
+
+                var facility = CreateFacilityFromTemplate(orduevi.Id, template);
+                context.Facilities.Add(facility);
+                existingFacilities.Add(facility);
+                added++;
+            }
+        }
+
+        if (added > 0)
+            await context.SaveChangesAsync();
+
+        Console.WriteLine($"[SeedData] Olanaklardan tesis servisi üretimi tamamlandı. Eklenen: {added}.");
+    }
+
+    private static Facility CreateFacilityFromTemplate(Guid ordueviId, AmenityFacilityTemplate template)
+    {
+        return new Facility
+        {
+            Id = Guid.NewGuid(),
+            OrdueviId = ordueviId,
+            Name = template.Name,
+            Category = template.Category,
+            AppointmentMode = template.AppointmentMode,
+            MaxConcurrency = template.MaxConcurrency,
+            BufferMinutes = template.BufferMinutes,
+            DefaultSlotDurationMinutes = template.DefaultSlotDurationMinutes,
+            OpeningTime = template.OpeningTime,
+            ClosingTime = template.ClosingTime,
+            IsActive = true,
+            Description = template.Description,
+            Icon = template.Icon
+        };
+    }
+
+    private static bool TemplateMatches(string normalizedSource, AmenityFacilityTemplate template)
+    {
+        return template.Keywords.Any(keyword => ContainsNormalizedPhrase(normalizedSource, keyword));
+    }
+
+    private static bool FacilityLooksLikeTemplate(Facility facility, AmenityFacilityTemplate template)
+    {
+        var normalizedFacility = NormalizeText($"{facility.Name} {facility.Description} {facility.Icon}");
+        var normalizedTemplateName = NormalizeText(template.Name);
+
+        return ContainsNormalizedPhrase(normalizedFacility, normalizedTemplateName) ||
+               template.Keywords.Any(keyword => ContainsNormalizedPhrase(normalizedFacility, keyword));
+    }
+
+    private static bool ContainsNormalizedPhrase(string normalizedSource, string phrase)
+    {
+        var normalizedPhrase = NormalizeText(phrase);
+        return !string.IsNullOrWhiteSpace(normalizedPhrase) &&
+               $" {normalizedSource} ".Contains($" {normalizedPhrase} ", StringComparison.Ordinal);
     }
 
     private static ScrapedOrdueviRecord CreateScrapedRecord(JsonElement item)

@@ -90,12 +90,22 @@ public static class SchemaMigrator
     {
         var updates = new[]
         {
+            "UPDATE `Orduevleri` SET `Name` = '' WHERE `Name` IS NULL",
+            "UPDATE `Orduevleri` SET `Description` = '' WHERE `Description` IS NULL",
+            "UPDATE `Orduevleri` SET `Address` = '' WHERE `Address` IS NULL",
+            "UPDATE `Orduevleri` SET `ContactNumber` = '' WHERE `ContactNumber` IS NULL",
+            "UPDATE `Orduevleri` SET `AdminUserId` = '' WHERE `AdminUserId` IS NULL",
+            "UPDATE `Orduevleri` SET `CreatedAt` = '2024-01-01 00:00:00' WHERE `CreatedAt` IS NULL",
             "UPDATE `Orduevleri` SET `Slug` = '' WHERE `Slug` IS NULL",
             "UPDATE `Orduevleri` SET `SourceUrl` = '' WHERE `SourceUrl` IS NULL",
             "UPDATE `Orduevleri` SET `FeaturedImageUrl` = '' WHERE `FeaturedImageUrl` IS NULL",
             "UPDATE `Orduevleri` SET `FeaturedImageLocalPath` = '' WHERE `FeaturedImageLocalPath` IS NULL",
             "UPDATE `Orduevleri` SET `Amenities` = '' WHERE `Amenities` IS NULL",
-            "UPDATE `Orduevleri` SET `ScrapedMetadataJson` = '' WHERE `ScrapedMetadataJson` IS NULL"
+            "UPDATE `Orduevleri` SET `ScrapedMetadataJson` = '' WHERE `ScrapedMetadataJson` IS NULL",
+            "UPDATE `Facilities` SET `Name` = '' WHERE `Name` IS NULL",
+            "UPDATE `Facilities` SET `Description` = '' WHERE `Description` IS NULL",
+            "UPDATE `Facilities` SET `Icon` = '' WHERE `Icon` IS NULL",
+            "UPDATE `Facilities` SET `ClosedDays` = '' WHERE `ClosedDays` IS NULL"
         };
 
         foreach (var updateSql in updates)
