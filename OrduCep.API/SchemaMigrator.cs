@@ -22,6 +22,34 @@ public static class SchemaMigrator
                 "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Orduevleri' AND COLUMN_NAME = 'UpdatedAt'",
                 "ALTER TABLE `Orduevleri` ADD COLUMN `UpdatedAt` DATETIME NULL"
             ),
+            (
+                "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Orduevleri' AND COLUMN_NAME = 'ScrapedSourceId'",
+                "ALTER TABLE `Orduevleri` ADD COLUMN `ScrapedSourceId` INT NULL"
+            ),
+            (
+                "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Orduevleri' AND COLUMN_NAME = 'Slug'",
+                "ALTER TABLE `Orduevleri` ADD COLUMN `Slug` VARCHAR(255) NOT NULL DEFAULT ''"
+            ),
+            (
+                "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Orduevleri' AND COLUMN_NAME = 'SourceUrl'",
+                "ALTER TABLE `Orduevleri` ADD COLUMN `SourceUrl` LONGTEXT NULL"
+            ),
+            (
+                "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Orduevleri' AND COLUMN_NAME = 'FeaturedImageUrl'",
+                "ALTER TABLE `Orduevleri` ADD COLUMN `FeaturedImageUrl` LONGTEXT NULL"
+            ),
+            (
+                "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Orduevleri' AND COLUMN_NAME = 'FeaturedImageLocalPath'",
+                "ALTER TABLE `Orduevleri` ADD COLUMN `FeaturedImageLocalPath` LONGTEXT NULL"
+            ),
+            (
+                "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Orduevleri' AND COLUMN_NAME = 'Amenities'",
+                "ALTER TABLE `Orduevleri` ADD COLUMN `Amenities` LONGTEXT NULL"
+            ),
+            (
+                "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Orduevleri' AND COLUMN_NAME = 'ScrapedMetadataJson'",
+                "ALTER TABLE `Orduevleri` ADD COLUMN `ScrapedMetadataJson` LONGTEXT NULL"
+            ),
 
             // ── Facilities ──
             (
@@ -50,10 +78,30 @@ public static class SchemaMigrator
             }
         }
 
+        await NormalizeOrdueviScrapedColumnsAsync(db);
+
         // UserId kolonu nullable değilse nullable yap
         await MakeUserIdNullableAsync(db);
 
         Console.WriteLine("[SchemaMigrator] Schema kontrolü tamamlandı.");
+    }
+
+    private static async Task NormalizeOrdueviScrapedColumnsAsync(OrduCepDbContext db)
+    {
+        var updates = new[]
+        {
+            "UPDATE `Orduevleri` SET `Slug` = '' WHERE `Slug` IS NULL",
+            "UPDATE `Orduevleri` SET `SourceUrl` = '' WHERE `SourceUrl` IS NULL",
+            "UPDATE `Orduevleri` SET `FeaturedImageUrl` = '' WHERE `FeaturedImageUrl` IS NULL",
+            "UPDATE `Orduevleri` SET `FeaturedImageLocalPath` = '' WHERE `FeaturedImageLocalPath` IS NULL",
+            "UPDATE `Orduevleri` SET `Amenities` = '' WHERE `Amenities` IS NULL",
+            "UPDATE `Orduevleri` SET `ScrapedMetadataJson` = '' WHERE `ScrapedMetadataJson` IS NULL"
+        };
+
+        foreach (var updateSql in updates)
+        {
+            await db.Database.ExecuteSqlRawAsync(updateSql);
+        }
     }
 
     private static async Task MakeUserIdNullableAsync(OrduCepDbContext db)
