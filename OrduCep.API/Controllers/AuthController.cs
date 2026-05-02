@@ -56,11 +56,12 @@ public class AuthController : ControllerBase
             PasswordHash = HashPassword(request.Password),
             FirstName = request.FirstName?.Trim() ?? string.Empty,
             LastName = request.LastName?.Trim() ?? string.Empty,
+            PhoneNumber = request.PhoneNumber?.Trim() ?? string.Empty,
             Relation = relation,
             OwnerTcNo = isRelative ? request.OwnerTcNo?.Trim() ?? string.Empty : string.Empty,
             OwnerFirstName = isRelative ? request.OwnerFirstName?.Trim() ?? string.Empty : string.Empty,
             OwnerLastName = isRelative ? request.OwnerLastName?.Trim() ?? string.Empty : string.Empty,
-            OwnerRank = isRelative ? request.OwnerRank?.Trim() ?? string.Empty : string.Empty,
+            OwnerRank = request.OwnerRank?.Trim() ?? string.Empty,
             CreatedAtUtc = DateTime.UtcNow
         };
 
@@ -73,6 +74,7 @@ public class AuthController : ControllerBase
             user.IdentityNumber,
             user.FirstName,
             user.LastName,
+            user.PhoneNumber,
             user.Relation,
             Message = "Kayıt başarıyla tamamlandı."
         });
@@ -90,17 +92,35 @@ public class AuthController : ControllerBase
         if (user is null || user.PasswordHash != HashPassword(request.Password))
             return Unauthorized(new { Message = "Kimlik numarası veya şifre hatalı." });
 
+        var userId = user.Id.ToString();
+        var managedFacilities = await _context.FacilityStaffs
+            .Include(s => s.Facility)
+            .ThenInclude(f => f.Orduevi)
+            .Where(s => s.UserId == userId)
+            .Select(s => new
+            {
+                StaffId = s.Id,
+                s.FacilityId,
+                FacilityName = s.Facility.Name,
+                s.Facility.OrdueviId,
+                OrdueviName = s.Facility.Orduevi.Name,
+                Role = s.Role.ToString()
+            })
+            .ToListAsync();
+
         return Ok(new
         {
             user.Id,
             user.IdentityNumber,
             user.FirstName,
             user.LastName,
+            user.PhoneNumber,
             user.Relation,
             user.OwnerTcNo,
             user.OwnerFirstName,
             user.OwnerLastName,
-            user.OwnerRank
+            user.OwnerRank,
+            ManagedFacilities = managedFacilities
         });
     }
 
@@ -119,6 +139,7 @@ public class RegisterRequest
 
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
+    public string PhoneNumber { get; set; } = string.Empty;
 
     /// <summary>
     /// "Kendisi" veya yakınlık: Eş, Çocuk, Anne, Baba vb.

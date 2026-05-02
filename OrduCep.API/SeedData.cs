@@ -304,7 +304,9 @@ public static class SeedData
                 PasswordHash = HashPassword("password123"),
                 FirstName = "Test",
                 LastName = "Kullanıcı",
+                PhoneNumber = "05000000000",
                 Relation = "Kendisi",
+                OwnerRank = "Yüzbaşı",
                 CreatedAtUtc = DateTime.UtcNow
             };
 

@@ -8,6 +8,7 @@ public class MilitaryIdentityUser
 
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
+    public string PhoneNumber { get; set; } = string.Empty;
 
     /// <summary>
     /// Kendisi (hak sahibi) veya yakınlık derecesi: Eş, Çocuk, Anne, Baba vb.

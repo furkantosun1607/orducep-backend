@@ -66,6 +66,12 @@ public static class SchemaMigrator
                 "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'FacilityStaffs' AND COLUMN_NAME = 'Name'",
                 "ALTER TABLE `FacilityStaffs` ADD COLUMN `Name` VARCHAR(255) NOT NULL DEFAULT ''"
             ),
+
+            // ── MilitaryIdentityUsers ──
+            (
+                "SELECT COUNT(*) AS `Value` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'MilitaryIdentityUsers' AND COLUMN_NAME = 'PhoneNumber'",
+                "ALTER TABLE `MilitaryIdentityUsers` ADD COLUMN `PhoneNumber` VARCHAR(32) NOT NULL DEFAULT ''"
+            ),
         };
 
         foreach (var (checkSql, alterSql) in migrations)
@@ -105,7 +111,8 @@ public static class SchemaMigrator
             "UPDATE `Facilities` SET `Name` = '' WHERE `Name` IS NULL",
             "UPDATE `Facilities` SET `Description` = '' WHERE `Description` IS NULL",
             "UPDATE `Facilities` SET `Icon` = '' WHERE `Icon` IS NULL",
-            "UPDATE `Facilities` SET `ClosedDays` = '' WHERE `ClosedDays` IS NULL"
+            "UPDATE `Facilities` SET `ClosedDays` = '' WHERE `ClosedDays` IS NULL",
+            "UPDATE `MilitaryIdentityUsers` SET `PhoneNumber` = '' WHERE `PhoneNumber` IS NULL"
         };
 
         foreach (var updateSql in updates)
