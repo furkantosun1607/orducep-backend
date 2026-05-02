@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using OrduCep.API;
 using OrduCep.Application.Interfaces;
 using OrduCep.Domain.Entities;
 
@@ -93,20 +94,21 @@ public class AuthController : ControllerBase
             return Unauthorized(new { Message = "Kimlik numarası veya şifre hatalı." });
 
         var userId = user.Id.ToString();
-        var managedFacilities = await _context.FacilityStaffs
+        var managedFacilityRows = await _context.FacilityStaffs
             .Include(s => s.Facility)
             .ThenInclude(f => f.Orduevi)
             .Where(s => s.UserId == userId)
-            .Select(s => new
-            {
-                StaffId = s.Id,
-                s.FacilityId,
-                FacilityName = s.Facility.Name,
-                s.Facility.OrdueviId,
-                OrdueviName = s.Facility.Orduevi.Name,
-                Role = s.Role.ToString()
-            })
             .ToListAsync();
+
+        var managedFacilities = managedFacilityRows.Select(s => new
+        {
+            StaffId = s.Id,
+            s.FacilityId,
+            FacilityName = s.Facility.Name,
+            s.Facility.OrdueviId,
+            OrdueviName = s.Facility.Orduevi.Name,
+            Role = PersonnelAccessRules.DisplayStaffRole(user.OwnerRank, s.Role)
+        });
 
         return Ok(new
         {
@@ -120,6 +122,7 @@ public class AuthController : ControllerBase
             user.OwnerFirstName,
             user.OwnerLastName,
             user.OwnerRank,
+            CanUseFacilities = PersonnelAccessRules.CanUseFacilities(user.OwnerRank),
             ManagedFacilities = managedFacilities
         });
     }
