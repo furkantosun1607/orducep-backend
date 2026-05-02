@@ -370,9 +370,21 @@ public static class SeedData
             .ToListAsync();
 
         var added = 0;
+        var updated = 0;
 
         foreach (var orduevi in orduevleri)
         {
+            var existingFacilities = orduevi.Facilities.ToList();
+
+            foreach (var existingFacility in existingFacilities)
+            {
+                var matchingTemplate = AmenityFacilityTemplates
+                    .FirstOrDefault(template => FacilityLooksLikeTemplate(existingFacility, template));
+
+                if (matchingTemplate != null && ApplyTemplatePresentation(existingFacility, matchingTemplate))
+                    updated++;
+            }
+
             var searchableText = NormalizeText(string.Join(' ',
                 orduevi.Name,
                 orduevi.Amenities,
@@ -382,15 +394,18 @@ public static class SeedData
             if (string.IsNullOrWhiteSpace(searchableText))
                 continue;
 
-            var existingFacilities = orduevi.Facilities.ToList();
-
             foreach (var template in AmenityFacilityTemplates)
             {
                 if (!TemplateMatches(searchableText, template))
                     continue;
 
-                if (existingFacilities.Any(f => FacilityLooksLikeTemplate(f, template)))
+                var existingFacility = existingFacilities.FirstOrDefault(f => FacilityLooksLikeTemplate(f, template));
+                if (existingFacility != null)
+                {
+                    if (ApplyTemplatePresentation(existingFacility, template))
+                        updated++;
                     continue;
+                }
 
                 var facility = CreateFacilityFromTemplate(orduevi.Id, template);
                 context.Facilities.Add(facility);
@@ -399,10 +414,10 @@ public static class SeedData
             }
         }
 
-        if (added > 0)
+        if (added > 0 || updated > 0)
             await context.SaveChangesAsync();
 
-        Console.WriteLine($"[SeedData] Olanaklardan tesis servisi üretimi tamamlandı. Eklenen: {added}.");
+        Console.WriteLine($"[SeedData] Olanaklardan tesis servisi üretimi tamamlandı. Eklenen: {added}, güncellenen: {updated}.");
     }
 
     private static Facility CreateFacilityFromTemplate(Guid ordueviId, AmenityFacilityTemplate template)
@@ -420,9 +435,171 @@ public static class SeedData
             OpeningTime = template.OpeningTime,
             ClosingTime = template.ClosingTime,
             IsActive = true,
-            Description = template.Description,
-            Icon = template.Icon
+            Description = BuildFacilityDescription(template.Name),
+            Icon = template.Icon,
+            Image = GetFacilityImagePath(template.Name)
         };
+    }
+
+    private static bool ApplyTemplatePresentation(Facility facility, AmenityFacilityTemplate template)
+    {
+        var changed = false;
+        var description = BuildFacilityDescription(template.Name);
+        var imagePath = GetFacilityImagePath(template.Name);
+
+        if (ShouldRefreshTemplateDescription(facility.Description))
+            changed |= SetIfChanged(facility.Description, description, value => facility.Description = value);
+
+        if (string.IsNullOrWhiteSpace(facility.Image) && !string.IsNullOrWhiteSpace(imagePath))
+        {
+            facility.Image = imagePath;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool ShouldRefreshTemplateDescription(string? description)
+    {
+        if (string.IsNullOrWhiteSpace(description))
+            return true;
+
+        var normalized = NormalizeText(description);
+        return LegacyTemplateDescriptions.Any(item => NormalizeText(item) == normalized);
+    }
+
+    private static readonly string[] LegacyTemplateDescriptions =
+    {
+        "Bu tesiste konaklama hizmeti sunulmaktadır.",
+        "Tesisin yeme-içme birimi.",
+        "Izgara ve sıcak yemek servisi sunan salon.",
+        "Pide ve lahmacun servisi bulunan yeme-içme birimi.",
+        "Hızlı servis yiyecek birimi.",
+        "Kafeterya ve dinlenme alanı.",
+        "Pastane ve tatlı servisi.",
+        "Sosyal içecek servisi alanı.",
+        "Düğün, davet ve organizasyon salonu.",
+        "Toplantı ve organizasyonlar için ayrılmış salon.",
+        "Berber hizmetleri.",
+        "Kuaför hizmetleri.",
+        "Hamam hizmeti.",
+        "Sauna kullanım alanı.",
+        "Termal banyo hizmeti.",
+        "Termal havuz kullanım alanı.",
+        "Spor salonu ve fitness alanı.",
+        "Açık veya kapalı spor alanı.",
+        "Yüzme havuzu kullanım alanı.",
+        "Çocuklar için havuz alanı.",
+        "Tenis kortu kullanım alanı.",
+        "Mini golf alanı.",
+        "Bilardo, tavla veya oyun alanı.",
+        "Çocuklar için oyun alanı.",
+        "Okuma ve dinlenme salonu.",
+        "Market ve alışveriş birimi.",
+        "Kuru temizleme hizmeti.",
+        "Terzi hizmeti.",
+        "Araç yıkama hizmeti.",
+        "Plaj kullanım alanı.",
+        "Su sporları etkinlik alanı.",
+        "Erkek ve çocuk saç kesimi, sakal tıraşı.",
+        "Pide ve fırın ürünleri servisi.",
+        "Meyhane ve canlı müzik."
+    };
+
+    private static string BuildFacilityDescription(string name)
+    {
+        var key = NormalizeText(name);
+
+        if (key.Contains("konaklama"))
+            return "Konaklama birimi; görev, izin veya ziyaret planı olan hak sahipleri için düzenli oda kullanımı ve sakin dinlenme alanı sunar. Giriş-çıkış saatleri tesis yoğunluğuna göre yönetilir.";
+        if (key.Contains("restoran"))
+            return "Restoran; günlük yemek, aile buluşması ve toplu servis ihtiyaçları için hazırlanmış ana yeme-içme alanıdır. Masa düzeni ve servis akışı yoğun saatlere göre planlanır.";
+        if (key.Contains("izgara"))
+            return "Izgara salonu; sıcak servis, ana yemek ve akşam kullanımı için ayrılmış yeme-içme birimidir. Siparişler mutfak hazırlık süresine göre yönetilir.";
+        if (key.Contains("pide"))
+            return "Pide-lahmacun salonu; fırın ürünleri, hızlı öğle/akşam yemeği ve aile masaları için kullanılan sıcak servis alanıdır.";
+        if (key.Contains("fast"))
+            return "Fast-food birimi; kısa sürede servis alınabilecek pratik yiyecek ve içecek seçenekleri için hazırlanmıştır.";
+        if (key.Contains("kafeterya"))
+            return "Kafeterya; çay, kahve, hafif atıştırmalık ve dinlenme kullanımı için tesisin sosyal buluşma alanıdır.";
+        if (key.Contains("pastane"))
+            return "Pastane; tatlı, pasta, sıcak-soğuk içecek ve misafir ağırlama ihtiyaçları için çalışan yeme-içme birimidir.";
+        if (key == "bar")
+            return "Bar alanı; sosyal içecek servisi ve akşam dinlenme kullanımı için ayrılmış kontrollü servis bölümüdür.";
+        if (key.Contains("dugun"))
+            return "Düğün salonu; davet, nişan, tören ve toplu organizasyonlar için rezervasyonla kullanılan geniş etkinlik alanıdır.";
+        if (key.Contains("toplanti"))
+            return "Toplantı salonu; brifing, eğitim, seminer ve kapalı grup organizasyonları için teknik düzene sahip çalışma alanıdır.";
+        if (key.Contains("berber"))
+            return "Berber birimi; saç kesimi, sakal tıraşı ve kişisel bakım randevuları için zaman bazlı çalışan hizmet alanıdır.";
+        if (key.Contains("kuafor"))
+            return "Kuaför birimi; saç bakım, kesim, şekillendirme ve kişisel bakım işlemleri için randevu düzeniyle hizmet verir.";
+        if (key.Contains("hamam"))
+            return "Hamam; belirlenen seanslarda kullanılan geleneksel bakım ve dinlenme alanıdır. Kullanım yoğunluğu kapasiteye göre sınırlandırılır.";
+        if (key.Contains("sauna"))
+            return "Sauna; kısa seanslarla kullanılan dinlenme ve yenilenme alanıdır. Seanslar hazırlık ve temizlik aralıklarına göre planlanır.";
+        if (key.Contains("termal banyo"))
+            return "Termal banyo; sıcak su ve bakım seansları için ayrılmış kontrollü kullanım alanıdır.";
+        if (key.Contains("termal havuz"))
+            return "Termal havuz; kapasite kontrollü seanslarla kullanılan sıcak su dinlenme alanıdır.";
+        if (key.Contains("spor salonu"))
+            return "Spor salonu; fitness ekipmanları, kondisyon çalışması ve düzenli spor kullanımı için ayrılmış alandır.";
+        if (key.Contains("spor alani"))
+            return "Spor alanı; açık veya kapalı saha kullanımı, takım etkinlikleri ve randevulu spor organizasyonları için uygundur.";
+        if (key.Contains("yuzme havuzu"))
+            return "Yüzme havuzu; sezon ve seans düzenine göre kullanılan kapasite kontrollü yüzme alanıdır.";
+        if (key.Contains("cocuk havuzu"))
+            return "Çocuk havuzu; aile kullanımı için ayrılmış, kapasite ve gözetim kurallarına göre işletilen havuz alanıdır.";
+        if (key.Contains("tenis"))
+            return "Tenis kortu; saatlik saha kullanımı ve bireysel spor randevuları için ayrılmış açık/kapalı oyun alanıdır.";
+        if (key.Contains("mini golf"))
+            return "Mini golf alanı; sosyal spor ve kısa süreli eğlence kullanımı için hazırlanmış açık etkinlik bölümüdür.";
+        if (key.Contains("oyun salonu"))
+            return "Oyun salonu; bilardo, masa oyunları ve sosyal vakit geçirme seçenekleri için kullanılan kapalı eğlence alanıdır.";
+        if (key.Contains("cocuk oyun"))
+            return "Çocuk oyun alanı; ailelerin tesis kullanımı sırasında çocuklar için ayrılmış güvenli sosyal alandır.";
+        if (key.Contains("okuma"))
+            return "Okuma salonu; sessiz çalışma, gazete-kitap okuma ve kısa dinlenme için ayrılmış sakin alandır.";
+        if (key.Contains("market"))
+            return "Market; günlük ihtiyaç, atıştırmalık ve temel ürün alışverişi için tesis içi pratik satış birimidir.";
+        if (key.Contains("kuru temizleme"))
+            return "Kuru temizleme; kıyafet teslim, bakım ve temizlik işlemleri için takipli hizmet veren birimdir.";
+        if (key.Contains("terzi"))
+            return "Terzi; paça, tadilat, küçük onarım ve ölçü işlemleri için zaman bazlı çalışan bakım birimidir.";
+        if (key.Contains("arac yikama"))
+            return "Araç yıkama; araç dış/iç temizlik işlemleri için randevulu veya kapasiteye bağlı kullanılan hizmet alanıdır.";
+        if (key.Contains("plaj"))
+            return "Özel plaj; sezonluk deniz, güneşlenme ve aile kullanımı için ayrılmış kontrollü sosyal alandır.";
+        if (key.Contains("su sporlari"))
+            return "Su sporları; deniz etkinlikleri, ekipmanlı aktiviteler ve kontrollü seanslar için planlanan etkinlik alanıdır.";
+
+        return "Bu hizmet birimi tesisin kullanım imkanlarına göre düzenlenmiştir. Saat, kapasite ve kullanım koşulları yoğunluğa göre yönetilir.";
+    }
+
+    private static string GetFacilityImagePath(string name)
+    {
+        var key = NormalizeText(name);
+
+        if (key.Contains("berber") || key.Contains("kuafor") || key.Contains("terzi"))
+            return "scraped_data/images/istanbul-selimiye-astsubay-orduevi/003-berber-koltugu.jpeg";
+        if (key.Contains("pastane"))
+            return "scraped_data/images/izmir-konak-subay-orduevi/004-pastane.png";
+        if (key == "bar")
+            return "scraped_data/images/istanbul-selimiye-astsubay-orduevi/007-bar.jpeg";
+        if (key.Contains("dugun"))
+            return "scraped_data/images/ankara-gazi-orduevi/009-gazi-orduevi-dugun-salonu-yenimahalle-ankara-2.png";
+        if (key.Contains("toplanti"))
+            return "scraped_data/images/izmir-konak-subay-orduevi/003-izmir-orduevi-personel-yatakhanesiozel-brifing-ve-toplanti-salonu-2.jpg";
+        if (key.Contains("konaklama"))
+            return "scraped_data/images/istanbul-selimiye-astsubay-orduevi/020-oda-manzarasi.jpeg";
+        if (key.Contains("kafeterya"))
+            return "scraped_data/images/antalya-side-jandarma-ozel-egitim-merkezi/006-cafetarya.jpeg";
+        if (key.Contains("restoran") || key.Contains("izgara") || key.Contains("pide") || key.Contains("fast"))
+            return "scraped_data/images/aydin-kusadasi-guzelcamli-ozel-egitim-merkezi/005-plaj-kenari-lokanta.png";
+        if (key.Contains("plaj") || key.Contains("havuz") || key.Contains("su sporlari"))
+            return "scraped_data/images/canakkale-gelibolu-hamzakoy-ozel-egitim-merkezi/004-pot43955-30355-gelibolu-hamzakoy-plaji-halkin-hizmetind.jpg";
+
+        return string.Empty;
     }
 
     private static bool TemplateMatches(string normalizedSource, AmenityFacilityTemplate template)
