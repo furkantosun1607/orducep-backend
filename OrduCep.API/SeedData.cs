@@ -37,6 +37,12 @@ public static class SeedData
         string Icon,
         string[] Keywords);
 
+    private sealed record DefaultFacilityServiceCatalogItem(
+        string ServiceName,
+        decimal Price,
+        int DurationMinutes,
+        int BufferMinutes = 0);
+
     private static readonly AmenityFacilityTemplate[] AmenityFacilityTemplates =
     {
         new("Konaklama", "Bu tesiste konaklama hizmeti sunulmaktadır.", FacilityCategory.SpaceBased, AppointmentMode.AppointmentOnly, 20, 0, 1440, new TimeSpan(14, 0, 0), new TimeSpan(12, 0, 0), "bed", new[] { "konaklama", "misafirhane", "misafirhanesi" }),
@@ -217,9 +223,9 @@ public static class SeedData
 
             // Berber: 3 koltuk
             context.Resources.AddRange(
-                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "1 Nolu Koltuk", Type = ResourceType.Chair, Capacity = 1, IsActive = true },
-                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "2 Nolu Koltuk", Type = ResourceType.Chair, Capacity = 1, IsActive = true },
-                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "3 Nolu Koltuk", Type = ResourceType.Chair, Capacity = 1, IsActive = true }
+                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "Ali Usta", Type = ResourceType.Staff, Capacity = 1, IsActive = true },
+                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "Mehmet Usta", Type = ResourceType.Staff, Capacity = 1, IsActive = true },
+                new Resource { Id = Guid.NewGuid(), FacilityId = berberId, Name = "Hasan Usta", Type = ResourceType.Staff, Capacity = 1, IsActive = true }
             );
 
             // Pide Salonu: 5 masa (farklı kapasiteler)
@@ -285,6 +291,8 @@ public static class SeedData
         }
 
         await SyncFacilitiesFromAmenitiesAsync(context);
+        await EnsureDefaultFacilityServicesAsync(context);
+        await EnsureDefaultFacilityResourcesAsync(context);
 
         // ── 3. Varsayılan Kullanıcı ──
         if (!await context.MilitaryIdentityUsers.AnyAsync())
@@ -418,6 +426,267 @@ public static class SeedData
             await context.SaveChangesAsync();
 
         Console.WriteLine($"[SeedData] Olanaklardan tesis servisi üretimi tamamlandı. Eklenen: {added}, güncellenen: {updated}.");
+    }
+
+    private static async Task EnsureDefaultFacilityServicesAsync(OrduCepDbContext context)
+    {
+        var facilities = await context.Facilities
+            .Include(f => f.Services)
+            .ToListAsync();
+
+        var added = 0;
+
+        foreach (var facility in facilities)
+        {
+            if (facility.Services.Any())
+                continue;
+
+            foreach (var item in BuildDefaultServiceCatalog(facility))
+            {
+                context.FacilityServices.Add(new FacilityService
+                {
+                    Id = Guid.NewGuid(),
+                    FacilityId = facility.Id,
+                    ServiceName = item.ServiceName,
+                    Price = item.Price,
+                    DurationMinutes = item.DurationMinutes,
+                    BufferMinutes = item.BufferMinutes,
+                    IsActive = true
+                });
+                added++;
+            }
+        }
+
+        if (added > 0)
+            await context.SaveChangesAsync();
+
+        Console.WriteLine($"[SeedData] Varsayılan hizmet/fiyat katalogları tamamlandı. Eklenen: {added}.");
+    }
+
+    private static async Task EnsureDefaultFacilityResourcesAsync(OrduCepDbContext context)
+    {
+        var facilities = await context.Facilities
+            .Include(f => f.Resources)
+            .ToListAsync();
+
+        var added = 0;
+
+        foreach (var facility in facilities)
+        {
+            if (facility.Resources.Any() || !NeedsSelectableStaffResource(facility))
+                continue;
+
+            var count = Math.Clamp(facility.MaxConcurrency, 1, 12);
+            for (var i = 1; i <= count; i++)
+            {
+                context.Resources.Add(new Resource
+                {
+                    Id = Guid.NewGuid(),
+                    FacilityId = facility.Id,
+                    Name = $"Berber {i}",
+                    Type = ResourceType.Staff,
+                    Capacity = 1,
+                    IsActive = true
+                });
+                added++;
+            }
+        }
+
+        if (added > 0)
+            await context.SaveChangesAsync();
+
+        Console.WriteLine($"[SeedData] Varsayılan berber/personel kaynakları tamamlandı. Eklenen: {added}.");
+    }
+
+    private static bool NeedsSelectableStaffResource(Facility facility)
+    {
+        var key = NormalizeText(string.Join(' ', facility.Icon, facility.Name, facility.Description));
+        return key.Contains("berber") || key.Contains("kuafor") || key.Contains("terzi") || key.Contains("scissors");
+    }
+
+    private static IReadOnlyList<DefaultFacilityServiceCatalogItem> BuildDefaultServiceCatalog(Facility facility)
+    {
+        var key = NormalizeText(string.Join(' ', facility.Icon, facility.Name, facility.Description));
+
+        if (key.Contains("berber"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Saç Kesimi", 120m, 30, 5),
+                new DefaultFacilityServiceCatalogItem("Sakal Tıraşı", 80m, 20, 5),
+                new DefaultFacilityServiceCatalogItem("Saç & Sakal", 180m, 45, 5),
+                new DefaultFacilityServiceCatalogItem("Çocuk Saç Kesimi", 100m, 25, 5),
+                new DefaultFacilityServiceCatalogItem("Yıkama & Fön", 70m, 20, 5)
+            };
+
+        if (key.Contains("kuafor"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Saç Kesimi", 180m, 45, 10),
+                new DefaultFacilityServiceCatalogItem("Fön", 120m, 30, 5),
+                new DefaultFacilityServiceCatalogItem("Saç Bakımı", 250m, 60, 10),
+                new DefaultFacilityServiceCatalogItem("Manikür", 150m, 40, 5),
+                new DefaultFacilityServiceCatalogItem("Pedikür", 180m, 45, 5)
+            };
+
+        if (key.Contains("pide") || key.Contains("lahmacun") || key.Contains("pizza"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Kıymalı Pide", 120m, 0),
+                new DefaultFacilityServiceCatalogItem("Kuşbaşılı Pide", 150m, 0),
+                new DefaultFacilityServiceCatalogItem("Kaşarlı Pide", 115m, 0),
+                new DefaultFacilityServiceCatalogItem("Lahmacun", 55m, 0),
+                new DefaultFacilityServiceCatalogItem("Ayran", 20m, 0)
+            };
+
+        if (key.Contains("restoran") || key.Contains("yemek") || key.Contains("yemekhane") || key.Contains("lokanta") || key.Contains("utensils"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Günün Çorbası", 45m, 0),
+                new DefaultFacilityServiceCatalogItem("Izgara Köfte", 180m, 0),
+                new DefaultFacilityServiceCatalogItem("Tavuk Şiş", 150m, 0),
+                new DefaultFacilityServiceCatalogItem("Et Sote", 220m, 0),
+                new DefaultFacilityServiceCatalogItem("Pilav / Makarna", 55m, 0),
+                new DefaultFacilityServiceCatalogItem("Salata", 70m, 0)
+            };
+
+        if (key.Contains("izgara") || key.Contains("grill") || key.Contains("flame"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Izgara Köfte", 180m, 0),
+                new DefaultFacilityServiceCatalogItem("Tavuk Izgara", 155m, 0),
+                new DefaultFacilityServiceCatalogItem("Karışık Izgara", 280m, 0),
+                new DefaultFacilityServiceCatalogItem("Patates Kızartması", 65m, 0)
+            };
+
+        if (key.Contains("fast") || key.Contains("sandwich"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Hamburger Menü", 145m, 0),
+                new DefaultFacilityServiceCatalogItem("Tost", 75m, 0),
+                new DefaultFacilityServiceCatalogItem("Sandviç", 85m, 0),
+                new DefaultFacilityServiceCatalogItem("Patates Kızartması", 65m, 0)
+            };
+
+        if (key.Contains("kafeterya") || key.Contains("kafe") || key.Contains("cafe") || key.Contains("coffee"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Çay", 15m, 0),
+                new DefaultFacilityServiceCatalogItem("Türk Kahvesi", 45m, 0),
+                new DefaultFacilityServiceCatalogItem("Filtre Kahve", 55m, 0),
+                new DefaultFacilityServiceCatalogItem("Tost", 75m, 0),
+                new DefaultFacilityServiceCatalogItem("Soğuk İçecek", 35m, 0)
+            };
+
+        if (key.Contains("pastane") || key.Contains("cake"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Dilim Pasta", 80m, 0),
+                new DefaultFacilityServiceCatalogItem("Sütlü Tatlı", 70m, 0),
+                new DefaultFacilityServiceCatalogItem("Kuru Pasta", 90m, 0),
+                new DefaultFacilityServiceCatalogItem("Çay / Kahve", 35m, 0)
+            };
+
+        if (key.Contains("bar") || key.Contains("meyhane") || key.Contains("glass") || key.Contains("wine"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Alkolsüz Kokteyl", 90m, 0),
+                new DefaultFacilityServiceCatalogItem("Meşrubat", 40m, 0),
+                new DefaultFacilityServiceCatalogItem("Karışık Çerez", 85m, 0),
+                new DefaultFacilityServiceCatalogItem("Meyve Tabağı", 140m, 0)
+            };
+
+        if (key.Contains("konaklama") || key.Contains("misafirhane") || key.Contains("bed"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Tek Kişilik Oda", 450m, 1440),
+                new DefaultFacilityServiceCatalogItem("Çift Kişilik Oda", 700m, 1440),
+                new DefaultFacilityServiceCatalogItem("Aile Odası", 950m, 1440)
+            };
+
+        if (key.Contains("dugun") || key.Contains("davet") || key.Contains("party"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Salon Kullanımı", 7500m, 240),
+                new DefaultFacilityServiceCatalogItem("Kişi Başı Yemek Menüsü", 450m, 0),
+                new DefaultFacilityServiceCatalogItem("Kokteyl İkram Paketi", 280m, 0)
+            };
+
+        if (key.Contains("toplanti") || key.Contains("konferans") || key.Contains("presentation"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Saatlik Salon Kullanımı", 500m, 60),
+                new DefaultFacilityServiceCatalogItem("Yarım Gün Salon", 1800m, 240),
+                new DefaultFacilityServiceCatalogItem("Tam Gün Salon", 3200m, 480)
+            };
+
+        if (key.Contains("hamam") || key.Contains("bath"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Hamam Girişi", 180m, 60, 15),
+                new DefaultFacilityServiceCatalogItem("Kese", 120m, 30, 10),
+                new DefaultFacilityServiceCatalogItem("Köpük Masajı", 180m, 30, 10)
+            };
+
+        if (key.Contains("sauna") || key.Contains("termal") || key.Contains("havuz") || key.Contains("pool") || key.Contains("plaj") || key.Contains("umbrella"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Günlük Giriş", 150m, 90, 15),
+                new DefaultFacilityServiceCatalogItem("Çocuk Girişi", 90m, 90, 15),
+                new DefaultFacilityServiceCatalogItem("Aile Kullanımı", 420m, 90, 15)
+            };
+
+        if (key.Contains("spor") || key.Contains("fitness") || key.Contains("tenis") || key.Contains("golf") || key.Contains("saha") || key.Contains("dumbbell") || key.Contains("activity"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Günlük Kullanım", 80m, 60, 10),
+                new DefaultFacilityServiceCatalogItem("Saatlik Saha", 300m, 60, 10),
+                new DefaultFacilityServiceCatalogItem("Aylık Üyelik", 650m, 60, 10)
+            };
+
+        if (key.Contains("market") || key.Contains("shopping"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Su", 10m, 0),
+                new DefaultFacilityServiceCatalogItem("Atıştırmalık", 35m, 0),
+                new DefaultFacilityServiceCatalogItem("Temel İhtiyaç Ürünleri", 75m, 0)
+            };
+
+        if (key.Contains("kuru") || key.Contains("temizleme") || key.Contains("shirt"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Gömlek Ütü", 45m, 0),
+                new DefaultFacilityServiceCatalogItem("Takım Elbise Temizleme", 220m, 0),
+                new DefaultFacilityServiceCatalogItem("Pantolon Temizleme", 110m, 0)
+            };
+
+        if (key.Contains("terzi") || key.Contains("needle"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Paça Tadilatı", 90m, 30),
+                new DefaultFacilityServiceCatalogItem("Fermuar Değişimi", 140m, 45),
+                new DefaultFacilityServiceCatalogItem("Rütbe / Arma Dikimi", 60m, 20)
+            };
+
+        if (key.Contains("arac") || key.Contains("oto") || key.Contains("yikama") || key.Contains("car"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Dış Yıkama", 150m, 30, 10),
+                new DefaultFacilityServiceCatalogItem("İç-Dış Yıkama", 250m, 45, 10),
+                new DefaultFacilityServiceCatalogItem("Detaylı Temizlik", 650m, 120, 15)
+            };
+
+        if (key.Contains("oyun") || key.Contains("bilardo") || key.Contains("gamepad"))
+            return new[]
+            {
+                new DefaultFacilityServiceCatalogItem("Saatlik Oyun Masası", 80m, 60),
+                new DefaultFacilityServiceCatalogItem("Bilardo", 120m, 60),
+                new DefaultFacilityServiceCatalogItem("Masa Oyunu Kullanımı", 0m, 60)
+            };
+
+        return new[]
+        {
+            new DefaultFacilityServiceCatalogItem("Standart Kullanım", 0m, Math.Max(facility.DefaultSlotDurationMinutes, 30), facility.BufferMinutes)
+        };
     }
 
     private static Facility CreateFacilityFromTemplate(Guid ordueviId, AmenityFacilityTemplate template)

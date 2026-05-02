@@ -26,11 +26,15 @@ public class ReservationsController : ControllerBase
     /// Bir tesis için o günkü müsait (ve dolu) zaman dilimlerini getirir.
     /// </summary>
     [HttpGet("slots/{facilityId}/{date}")]
-    public async Task<IActionResult> GetAvailableTimeSlots(Guid facilityId, DateTime date, [FromQuery] Guid? serviceId = null)
+    public async Task<IActionResult> GetAvailableTimeSlots(
+        Guid facilityId,
+        DateTime date,
+        [FromQuery] Guid? serviceId = null,
+        [FromQuery] Guid? resourceId = null)
     {
         try
         {
-            var slots = await _reservationService.GetAvailableTimeSlotsAsync(facilityId, date, serviceId);
+            var slots = await _reservationService.GetAvailableTimeSlotsAsync(facilityId, date, serviceId, resourceId);
             return Ok(slots);
         }
         catch (Exception ex)
@@ -115,7 +119,8 @@ public class ReservationsController : ControllerBase
         Guid facilityId, 
         [FromQuery] DateTime startDate, 
         [FromQuery] DateTime endDate, 
-        [FromQuery] Guid? serviceId = null)
+        [FromQuery] Guid? serviceId = null,
+        [FromQuery] Guid? resourceId = null)
     {
         // Tarih verilmezse varsayılan olarak bugünden itibaren 30 gün gösterelim
         if (startDate == default) startDate = DateTime.UtcNow.Date;
@@ -123,7 +128,7 @@ public class ReservationsController : ControllerBase
 
         try
         {
-            var calendar = await _reservationService.GetFacilityAvailabilityCalendarAsync(facilityId, startDate, endDate, serviceId);
+            var calendar = await _reservationService.GetFacilityAvailabilityCalendarAsync(facilityId, startDate, endDate, serviceId, resourceId);
             return Ok(calendar);
         }
         catch (Exception ex)
