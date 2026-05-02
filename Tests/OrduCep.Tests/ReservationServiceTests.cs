@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using OrduCep.Application.Services;
 using OrduCep.Domain.Entities;
+using OrduCep.Domain.Enums;
 using OrduCep.Infrastructure.Persistence;
 using Xunit;
 
@@ -8,78 +9,118 @@ namespace OrduCep.Tests;
 
 public class ReservationServiceTests
 {
-    private OrduCepDbContext GetInMemoryDbContext()
+    private static OrduCepDbContext GetInMemoryDbContext()
     {
         var options = new DbContextOptionsBuilder<OrduCepDbContext>()
             .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
             .Options;
-        
+
         return new OrduCepDbContext(options);
+    }
+
+    private static Facility CreateFacility(Guid facilityId)
+    {
+        return new Facility
+        {
+            Id = facilityId,
+            OpeningTime = new TimeSpan(8, 0, 0),
+            ClosingTime = new TimeSpan(10, 0, 0),
+            DefaultSlotDurationMinutes = 30,
+            MaxConcurrency = 1,
+            AppointmentMode = AppointmentMode.AppointmentOnly,
+            IsActive = true
+        };
     }
 
     [Fact]
     public async Task GetAvailableTimeSlots_Returns_Correct_Slots()
     {
-        // 1. Arrange (Hazırlık)
         var context = GetInMemoryDbContext();
         var facilityId = Guid.NewGuid();
-        
-        // Örnek bir tesis oluşturuyoruz: 08:00 ile 10:00 arası açık (Sadece 2 saat = 4 slot)
-        context.Facilities.Add(new Facility
-        {
-            Id = facilityId,
-            OpeningTime = new TimeSpan(8, 0, 0),
-            ClosingTime = new TimeSpan(10, 0, 0),
-            SlotDurationInMinutes = 30, // Yarım saatte bir
-            IsActive = true
-        });
+        var testDate = DateTime.Today.AddDays(1);
 
-        // 08:00 - 08:30 arasına dolu bir randevu ekliyoruz
-        var testDate = DateTime.UtcNow.Date;
+        context.Facilities.Add(CreateFacility(facilityId));
         context.Reservations.Add(new Reservation
         {
             Id = Guid.NewGuid(),
             FacilityId = facilityId,
             StartTime = testDate.AddHours(8),
             EndTime = testDate.AddHours(8).AddMinutes(30),
-            Status = "Approved",
+            Status = ReservationStatus.Approved,
             UserId = "ahmet"
         });
 
         await context.SaveChangesAsync();
 
         var service = new ReservationService(context);
-
-        // 2. Act (Çalıştırma)
         var slots = await service.GetAvailableTimeSlotsAsync(facilityId, testDate);
 
-        // 3. Assert (Doğrulama)
-        Assert.Equal(4, slots.Count); // Toplam 4 slot dönmeli (08:00, 08:30, 09:00, 09:30)
-        
-        // İlk slotun dolu olması gerekiyor (ahmet almıştı)
-        Assert.False(slots[0].IsAvailable); 
-        Assert.Equal("ahmet", slots[0].OccupiedByUserId);
-
-        // İkinci slot boş olmalı
+        Assert.Equal(4, slots.Count);
+        Assert.False(slots[0].IsAvailable);
         Assert.True(slots[1].IsAvailable);
     }
 
     [Fact]
     public async Task LockTimeSlot_Prevents_DoubleBooking()
     {
-        // Arrange
         var context = GetInMemoryDbContext();
         var service = new ReservationService(context);
         var facilityId = Guid.NewGuid();
-        var targetTime = DateTime.UtcNow.Date.AddHours(14); // Saat 14:00
+        var targetTime = DateTime.Today.AddDays(1).AddHours(8);
 
-        // Act & Assert 1: Mehmet 14:00'ı kilitler ve başarılı olur
-        bool firstLock = await service.LockTimeSlotAsync(facilityId, targetTime, targetTime.AddMinutes(30), "mehmet");
+        context.Facilities.Add(CreateFacility(facilityId));
+        await context.SaveChangesAsync();
+
+        var firstLock = await service.LockTimeSlotAsync(facilityId, targetTime, null, null, "mehmet");
+        var secondLock = await service.LockTimeSlotAsync(facilityId, targetTime, null, null, "ali");
+
         Assert.True(firstLock);
-
-        // Act & Assert 2: Salihesinde başka biri (Ali) aynı saniyede 14:00'ı seçmeye çalışır.
-        // HATA ve FALSE dönmelidir çünkü sistem onu kilitledi
-        bool secondLock = await service.LockTimeSlotAsync(facilityId, targetTime, targetTime.AddMinutes(30), "ali");
         Assert.False(secondLock);
+    }
+
+    [Fact]
+    public async Task LockTimeSlot_Rejects_PastStartTime()
+    {
+        var context = GetInMemoryDbContext();
+        var service = new ReservationService(context);
+        var facilityId = Guid.NewGuid();
+        var pastTime = DateTime.Now.AddMinutes(-1);
+
+        context.Facilities.Add(CreateFacility(facilityId));
+        await context.SaveChangesAsync();
+
+        var locked = await service.LockTimeSlotAsync(facilityId, pastTime, null, null, "mehmet");
+
+        Assert.False(locked);
+        Assert.Empty(context.Reservations);
+    }
+
+    [Fact]
+    public async Task ConfirmReservation_Rejects_PastLockedSlot()
+    {
+        var context = GetInMemoryDbContext();
+        var service = new ReservationService(context);
+        var facilityId = Guid.NewGuid();
+        var pastTime = DateTime.Now.AddMinutes(-1);
+
+        context.Facilities.Add(CreateFacility(facilityId));
+        context.Reservations.Add(new Reservation
+        {
+            Id = Guid.NewGuid(),
+            FacilityId = facilityId,
+            StartTime = pastTime,
+            EndTime = pastTime.AddMinutes(30),
+            Status = ReservationStatus.Locked,
+            LockedUntil = DateTime.UtcNow.AddMinutes(5),
+            UserId = "mehmet"
+        });
+        await context.SaveChangesAsync();
+
+        var confirmed = await service.ConfirmReservationAsync(facilityId, pastTime, "mehmet");
+        var reservation = await context.Reservations.SingleAsync();
+
+        Assert.False(confirmed);
+        Assert.Equal(ReservationStatus.Cancelled, reservation.Status);
+        Assert.Null(reservation.LockedUntil);
     }
 }

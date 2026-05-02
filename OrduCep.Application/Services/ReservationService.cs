@@ -15,6 +15,18 @@ public class ReservationService : IReservationService
         _context = context;
     }
 
+    private static DateTime ToBusinessLocalTime(DateTime value)
+    {
+        return value.Kind == DateTimeKind.Utc
+            ? value.ToLocalTime()
+            : DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
+    }
+
+    private static bool IsPastOrCurrentBusinessTime(DateTime startTime)
+    {
+        return ToBusinessLocalTime(startTime) <= DateTime.Now;
+    }
+
     /// <inheritdoc />
     public async Task<List<TimeSlotDto>> GetAvailableTimeSlotsAsync(Guid facilityId, DateTime date, Guid? serviceId = null)
     {
@@ -66,6 +78,7 @@ public class ReservationService : IReservationService
 
         var slots = new List<TimeSlotDto>();
         var cursor = dayStart;
+        var now = DateTime.Now;
 
         while (cursor + TimeSpan.FromMinutes(slotDuration) <= dayEnd)
         {
@@ -80,13 +93,14 @@ public class ReservationService : IReservationService
                  (r.Status == ReservationStatus.Locked && r.LockedUntil > DateTime.UtcNow)));
 
             int availableCapacity = totalCapacity - overlappingCount;
+            bool isFutureSlot = ToBusinessLocalTime(cursor) > now;
 
             slots.Add(new TimeSlotDto
             {
                 StartTime = cursor,
                 EndTime = slotEnd,
-                IsAvailable = availableCapacity > 0,
-                AvailableCapacity = Math.Max(0, availableCapacity),
+                IsAvailable = isFutureSlot && availableCapacity > 0,
+                AvailableCapacity = isFutureSlot ? Math.Max(0, availableCapacity) : 0,
                 TotalCapacity = totalCapacity,
                 OccupiedByUserId = string.Empty
             });
@@ -113,6 +127,9 @@ public class ReservationService : IReservationService
             return false;
 
         if (facility.AppointmentMode == AppointmentMode.WalkInOnly)
+            return false;
+
+        if (IsPastOrCurrentBusinessTime(startTime))
             return false;
 
         // Hizmet süresi hesapla
@@ -220,6 +237,14 @@ public class ReservationService : IReservationService
         if (lockedReservation == null)
             return false;
 
+        if (IsPastOrCurrentBusinessTime(lockedReservation.StartTime))
+        {
+            lockedReservation.Status = ReservationStatus.Cancelled;
+            lockedReservation.LockedUntil = null;
+            await _context.SaveChangesAsync(default);
+            return false;
+        }
+
         // Süre dolmuşsa iptal et
         if (lockedReservation.LockedUntil < DateTime.UtcNow)
         {
@@ -275,7 +300,7 @@ public class ReservationService : IReservationService
             return false;
 
         // Geçmiş randevuları iptal etmeyi engelle
-        if (reservation.StartTime <= DateTime.UtcNow)
+        if (IsPastOrCurrentBusinessTime(reservation.StartTime))
             return false;
 
         if (reservation.Status == ReservationStatus.Cancelled)
