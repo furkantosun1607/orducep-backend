@@ -26,11 +26,15 @@ public class ReservationsController : ControllerBase
     /// Bir tesis için o günkü müsait (ve dolu) zaman dilimlerini getirir.
     /// </summary>
     [HttpGet("slots/{facilityId}/{date}")]
-    public async Task<IActionResult> GetAvailableTimeSlots(Guid facilityId, DateTime date, [FromQuery] Guid? serviceId = null)
+    public async Task<IActionResult> GetAvailableTimeSlots(
+        Guid facilityId,
+        DateTime date,
+        [FromQuery] Guid? serviceId = null,
+        [FromQuery] Guid? resourceId = null)
     {
         try
         {
-            var slots = await _reservationService.GetAvailableTimeSlotsAsync(facilityId, date, serviceId);
+            var slots = await _reservationService.GetAvailableTimeSlotsAsync(facilityId, date, serviceId, resourceId);
             return Ok(slots);
         }
         catch (Exception ex)
@@ -108,6 +112,155 @@ public class ReservationsController : ControllerBase
     }
 
     /// <summary>
+    /// Bir tesisin randevularını yönetim/personel ekranı için müşteri bilgileriyle listeler.
+    /// </summary>
+    [HttpGet("facilities/{facilityId:guid}/reservations")]
+    public async Task<IActionResult> GetFacilityReservations(
+        Guid facilityId,
+        [FromQuery] DateTime? startDate,
+        [FromQuery] DateTime? endDate,
+        [FromQuery] Guid? resourceId,
+        [FromQuery] bool includeCancelled,
+        [FromQuery] bool isSuperAdmin,
+        [FromQuery] string? userId,
+        [FromServices] IApplicationDbContext context)
+    {
+        var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
+        if (!facilityExists)
+            return NotFound(new { Message = "Tesis bulunamadı." });
+
+        var isFacilityStaff = !string.IsNullOrWhiteSpace(userId) &&
+            await context.FacilityStaffs.AnyAsync(s => s.FacilityId == facilityId && s.UserId == userId);
+
+        if (!isSuperAdmin && !isFacilityStaff)
+            return StatusCode(403, new { Message = "Bu tesisin randevularını görme yetkiniz yok." });
+
+        var from = (startDate ?? DateTime.Today).Date;
+        var toExclusive = (endDate ?? from.AddDays(14)).Date.AddDays(1);
+
+        var query = context.Reservations
+            .Include(r => r.Service)
+            .Include(r => r.Resource)
+            .Where(r => r.FacilityId == facilityId &&
+                        r.StartTime >= from &&
+                        r.StartTime < toExclusive &&
+                        r.Status != ReservationStatus.Locked);
+
+        if (!includeCancelled)
+            query = query.Where(r => r.Status != ReservationStatus.Cancelled);
+
+        if (resourceId.HasValue)
+            query = query.Where(r => r.ResourceId == resourceId.Value);
+
+        var reservations = await query
+            .OrderBy(r => r.StartTime)
+            .ToListAsync();
+
+        var reservationUserIds = reservations
+            .Select(r => r.UserId)
+            .Where(id => Guid.TryParse(id, out _))
+            .Select(Guid.Parse)
+            .Distinct()
+            .ToList();
+
+        var users = await context.MilitaryIdentityUsers
+            .Where(u => reservationUserIds.Contains(u.Id))
+            .ToListAsync();
+
+        var userMap = users.ToDictionary(u => u.Id.ToString(), StringComparer.OrdinalIgnoreCase);
+
+        var result = reservations.Select(r =>
+        {
+            userMap.TryGetValue(r.UserId, out var user);
+            var ownerName = user == null
+                ? string.Empty
+                : user.Relation == "Kendisi"
+                    ? BuildFullName(user.FirstName, user.LastName)
+                    : BuildFullName(user.OwnerFirstName, user.OwnerLastName);
+
+            return new
+            {
+                r.Id,
+                r.FacilityId,
+                r.ServiceId,
+                ServiceName = r.Service != null ? r.Service.ServiceName : string.Empty,
+                r.ResourceId,
+                ResourceName = r.Resource != null ? r.Resource.Name : string.Empty,
+                r.StartTime,
+                r.EndTime,
+                Status = r.Status.ToString(),
+                r.GuestCount,
+                r.Note,
+                UserId = r.UserId,
+                CustomerName = user != null ? BuildFullName(user.FirstName, user.LastName) : "Bilinmeyen kullanıcı",
+                CustomerIdentityNumber = user?.IdentityNumber ?? string.Empty,
+                CustomerPhoneNumber = user?.PhoneNumber ?? string.Empty,
+                Relation = user?.Relation ?? string.Empty,
+                OwnerName = ownerName,
+                OwnerIdentityNumber = user?.OwnerTcNo ?? string.Empty,
+                OwnerRank = user?.OwnerRank ?? string.Empty,
+                CanCancel = r.Status != ReservationStatus.Cancelled && !IsPastOrCurrentBusinessTime(r.StartTime)
+            };
+        });
+
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Süper admin veya tesis personeli/berber kaynağı, tesise ait tek bir randevuyu iptal eder.
+    /// </summary>
+    [HttpPut("facilities/{facilityId:guid}/reservations/{reservationId:guid}/cancel")]
+    public async Task<IActionResult> CancelFacilityReservation(
+        Guid facilityId,
+        Guid reservationId,
+        [FromBody] ManagerCancelReservationRequest request,
+        [FromServices] IApplicationDbContext context)
+    {
+        request ??= new ManagerCancelReservationRequest();
+
+        var reservation = await context.Reservations
+            .FirstOrDefaultAsync(r => r.Id == reservationId && r.FacilityId == facilityId);
+
+        if (reservation == null)
+            return NotFound(new { Message = "Randevu bulunamadı." });
+
+        var isResourceOwner = false;
+        if (request.ResourceId.HasValue && reservation.ResourceId == request.ResourceId.Value)
+        {
+            isResourceOwner = await context.Resources
+                .AnyAsync(r => r.Id == request.ResourceId.Value && r.FacilityId == facilityId && r.IsActive);
+        }
+
+        var isFacilityStaff = false;
+        if (!string.IsNullOrWhiteSpace(request.UserId))
+        {
+            isFacilityStaff = await context.FacilityStaffs
+                .AnyAsync(s => s.FacilityId == facilityId && s.UserId == request.UserId);
+        }
+
+        if (!request.IsSuperAdmin && !isResourceOwner && !isFacilityStaff)
+            return StatusCode(403, new { Message = "Bu randevuyu iptal etme yetkiniz yok." });
+
+        if (IsPastOrCurrentBusinessTime(reservation.StartTime))
+            return BadRequest(new { Message = "Geçmiş randevular iptal edilemez." });
+
+        if (reservation.Status == ReservationStatus.Cancelled)
+            return Ok(new { Message = "Randevu zaten iptal edilmiş." });
+
+        reservation.Status = ReservationStatus.Cancelled;
+        reservation.LockedUntil = null;
+
+        if (!string.IsNullOrWhiteSpace(request.Reason))
+            reservation.Note = string.IsNullOrWhiteSpace(reservation.Note)
+                ? $"İptal nedeni: {request.Reason.Trim()}"
+                : $"{reservation.Note}\nİptal nedeni: {request.Reason.Trim()}";
+
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+
+        return Ok(new { Message = "Randevu iptal edildi." });
+    }
+
+    /// <summary>
     /// Bir tesisin belirli bir tarih aralığındaki günlük müsaitlik takvimini getirir.
     /// </summary>
     [HttpGet("facilities/{facilityId:guid}/availability-calendar")]
@@ -115,7 +268,8 @@ public class ReservationsController : ControllerBase
         Guid facilityId, 
         [FromQuery] DateTime startDate, 
         [FromQuery] DateTime endDate, 
-        [FromQuery] Guid? serviceId = null)
+        [FromQuery] Guid? serviceId = null,
+        [FromQuery] Guid? resourceId = null)
     {
         // Tarih verilmezse varsayılan olarak bugünden itibaren 30 gün gösterelim
         if (startDate == default) startDate = DateTime.UtcNow.Date;
@@ -123,13 +277,30 @@ public class ReservationsController : ControllerBase
 
         try
         {
-            var calendar = await _reservationService.GetFacilityAvailabilityCalendarAsync(facilityId, startDate, endDate, serviceId);
+            var calendar = await _reservationService.GetFacilityAvailabilityCalendarAsync(facilityId, startDate, endDate, serviceId, resourceId);
             return Ok(calendar);
         }
         catch (Exception ex)
         {
             return BadRequest(new { Message = ex.Message });
         }
+    }
+
+    private static string BuildFullName(params string[] parts)
+    {
+        return string.Join(" ", parts.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()));
+    }
+
+    private static DateTime ToBusinessLocalTime(DateTime value)
+    {
+        return value.Kind == DateTimeKind.Utc
+            ? value.ToLocalTime()
+            : DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
+    }
+
+    private static bool IsPastOrCurrentBusinessTime(DateTime startTime)
+    {
+        return ToBusinessLocalTime(startTime) <= DateTime.Now;
     }
 
     // ──────────────────────────────────────────────
@@ -495,6 +666,140 @@ public class ReservationsController : ControllerBase
     }
 
     // ──────────────────────────────────────────────
+    //  TESİS SORUMLU PERSONEL YÖNETİMİ
+    // ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Bir tesisin TC ile bağlanmış sorumlu personellerini getirir.
+    /// </summary>
+    [HttpGet("facilities/{facilityId:guid}/staff")]
+    public async Task<IActionResult> GetFacilityStaff(Guid facilityId, [FromServices] IApplicationDbContext context)
+    {
+        var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
+        if (!facilityExists)
+            return NotFound(new { Message = "Tesis bulunamadı." });
+
+        var staff = await context.FacilityStaffs
+            .Where(s => s.FacilityId == facilityId)
+            .OrderBy(s => s.Name)
+            .ToListAsync();
+
+        var userIds = staff
+            .Select(s => s.UserId)
+            .Where(id => Guid.TryParse(id, out _))
+            .Select(Guid.Parse)
+            .Distinct()
+            .ToList();
+
+        var users = await context.MilitaryIdentityUsers
+            .Where(u => userIds.Contains(u.Id))
+            .ToListAsync();
+
+        var userMap = users.ToDictionary(u => u.Id.ToString(), StringComparer.OrdinalIgnoreCase);
+
+        return Ok(staff.Select(s =>
+        {
+            userMap.TryGetValue(s.UserId ?? string.Empty, out var user);
+
+            return new
+            {
+                s.Id,
+                s.FacilityId,
+                s.UserId,
+                s.Name,
+                Role = s.Role.ToString(),
+                IdentityNumber = user?.IdentityNumber ?? string.Empty,
+                PhoneNumber = user?.PhoneNumber ?? string.Empty,
+                Rank = user?.OwnerRank ?? string.Empty
+            };
+        }));
+    }
+
+    /// <summary>
+    /// T.C. kimlik numarası ile kayıtlı kullanıcıyı tesis sorumlusu yapar.
+    /// </summary>
+    [HttpPost("facilities/{facilityId:guid}/staff")]
+    public async Task<IActionResult> AddFacilityStaff(Guid facilityId, [FromBody] AddFacilityStaffRequest request, [FromServices] IApplicationDbContext context)
+    {
+        request ??= new AddFacilityStaffRequest();
+
+        var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
+        if (!facilityExists)
+            return NotFound(new { Message = "Tesis bulunamadı." });
+
+        var identityNumber = request.IdentityNumber?.Trim() ?? string.Empty;
+        if (identityNumber.Length != 11)
+            return BadRequest(new { Message = "Personel T.C. kimlik numarası 11 haneli olmalıdır." });
+
+        var user = await context.MilitaryIdentityUsers
+            .FirstOrDefaultAsync(u => u.IdentityNumber == identityNumber);
+
+        if (user == null)
+            return NotFound(new { Message = "Bu T.C. kimlik numarası ile kayıtlı kullanıcı bulunamadı. Önce normal kullanıcı kaydı oluşturulmalıdır." });
+
+        var userId = user.Id.ToString();
+        var existing = await context.FacilityStaffs
+            .FirstOrDefaultAsync(s => s.FacilityId == facilityId && s.UserId == userId);
+
+        var role = Enum.TryParse<FacilityRole>(request.Role, true, out var parsedRole)
+            ? parsedRole
+            : FacilityRole.Manager;
+
+        var displayName = BuildFullName(user.FirstName, user.LastName);
+
+        if (existing != null)
+        {
+            existing.Name = displayName;
+            existing.Role = role;
+        }
+        else
+        {
+            existing = new FacilityStaff
+            {
+                Id = Guid.NewGuid(),
+                FacilityId = facilityId,
+                UserId = userId,
+                Name = displayName,
+                Role = role
+            };
+            context.FacilityStaffs.Add(existing);
+        }
+
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+
+        return Ok(new
+        {
+            existing.Id,
+            existing.FacilityId,
+            existing.UserId,
+            existing.Name,
+            Role = existing.Role.ToString(),
+            user.IdentityNumber,
+            user.PhoneNumber,
+            Rank = user.OwnerRank,
+            Message = "Sorumlu personel eklendi."
+        });
+    }
+
+    /// <summary>
+    /// Tesis sorumlu personel bağlantısını kaldırır.
+    /// </summary>
+    [HttpDelete("facilities/{facilityId:guid}/staff/{staffId:guid}")]
+    public async Task<IActionResult> DeleteFacilityStaff(Guid facilityId, Guid staffId, [FromServices] IApplicationDbContext context)
+    {
+        var staff = await context.FacilityStaffs
+            .FirstOrDefaultAsync(s => s.Id == staffId && s.FacilityId == facilityId);
+
+        if (staff == null)
+            return NotFound(new { Message = "Sorumlu personel bulunamadı." });
+
+        context.FacilityStaffs.Remove(staff);
+        await context.SaveChangesAsync(HttpContext.RequestAborted);
+
+        return NoContent();
+    }
+
+    // ──────────────────────────────────────────────
     //  HİZMET (SERVICE) YÖNETİMİ
     // ──────────────────────────────────────────────
 
@@ -685,6 +990,14 @@ public class ConfirmRequest
     public string UserId { get; set; } = string.Empty;
 }
 
+public class ManagerCancelReservationRequest
+{
+    public bool IsSuperAdmin { get; set; }
+    public string UserId { get; set; } = string.Empty;
+    public Guid? ResourceId { get; set; }
+    public string? Reason { get; set; }
+}
+
 public class CreateFacilityRequest
 {
     public Guid OrdueviId { get; set; }
@@ -709,6 +1022,12 @@ public class CreateResourceRequest
     public string Type { get; set; } = "Generic";
     public int Capacity { get; set; } = 1;
     public string? Tags { get; set; }
+}
+
+public class AddFacilityStaffRequest
+{
+    public string IdentityNumber { get; set; } = string.Empty;
+    public string Role { get; set; } = "Manager";
 }
 
 public class CreateServiceRequest

@@ -6,9 +6,9 @@ public interface IReservationService
 {
     /// <summary>
     /// Belirtilen tesis ve tarih için müsait zaman dilimlerini getirir.
-    /// serviceId verilirse, slot süreleri hizmet süresine göre hesaplanır.
+    /// resourceId verilirse müsaitlik sadece seçili personel/kaynak için hesaplanır.
     /// </summary>
-    Task<List<TimeSlotDto>> GetAvailableTimeSlotsAsync(Guid facilityId, DateTime date, Guid? serviceId = null);
+    Task<List<TimeSlotDto>> GetAvailableTimeSlotsAsync(Guid facilityId, DateTime date, Guid? serviceId = null, Guid? resourceId = null);
 
     /// <summary>
     /// Zaman dilimini kullanıcı için 5 dakika kilitler.
@@ -34,5 +34,5 @@ public interface IReservationService
     /// <summary>
     /// Belirtilen tarih aralığı için gün gün müsaitlik takvimini getirir.
     /// </summary>
-    Task<List<CalendarDayDto>> GetFacilityAvailabilityCalendarAsync(Guid facilityId, DateTime startDate, DateTime endDate, Guid? serviceId = null);
+    Task<List<CalendarDayDto>> GetFacilityAvailabilityCalendarAsync(Guid facilityId, DateTime startDate, DateTime endDate, Guid? serviceId = null, Guid? resourceId = null);
 }

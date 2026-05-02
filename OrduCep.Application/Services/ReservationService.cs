@@ -28,7 +28,7 @@ public class ReservationService : IReservationService
     }
 
     /// <inheritdoc />
-    public async Task<List<TimeSlotDto>> GetAvailableTimeSlotsAsync(Guid facilityId, DateTime date, Guid? serviceId = null)
+    public async Task<List<TimeSlotDto>> GetAvailableTimeSlotsAsync(Guid facilityId, DateTime date, Guid? serviceId = null, Guid? resourceId = null)
     {
         var facility = await _context.Facilities
             .FirstOrDefaultAsync(f => f.Id == facilityId && f.IsActive);
@@ -39,30 +39,24 @@ public class ReservationService : IReservationService
         if (facility.AppointmentMode == AppointmentMode.WalkInOnly)
             throw new Exception("Bu tesis sadece walk-in kabul eder, randevu sistemi yoktur.");
 
-        // Hizmet süresi: serviceId verilmişse hizmet süresini kullan, yoksa varsayılan slot süresini kullan
         int slotDuration = facility.DefaultSlotDurationMinutes;
-        int bufferMinutes = facility.BufferMinutes;
-
-        if (serviceId.HasValue)
-        {
-            var service = await _context.FacilityServices
-                .FirstOrDefaultAsync(s => s.Id == serviceId.Value && s.FacilityId == facilityId && s.IsActive);
-
-            if (service != null)
-            {
-                slotDuration = service.DurationMinutes;
-                bufferMinutes = service.BufferMinutes > 0 ? service.BufferMinutes : facility.BufferMinutes;
-            }
-        }
+        const int bufferMinutes = 0;
 
         if (slotDuration <= 0)
             slotDuration = 30; // Güvenlik: sıfır ya da negatif süre engelle
 
-        // Toplam kapasite: aktif Resource sayısı veya MaxConcurrency (hangisi büyükse)
         var activeResourceCount = await _context.Resources
             .CountAsync(r => r.FacilityId == facilityId && r.IsActive);
 
-        int totalCapacity = activeResourceCount > 0 ? activeResourceCount : facility.MaxConcurrency;
+        var selectedResourceExists = !resourceId.HasValue || await _context.Resources
+            .AnyAsync(r => r.Id == resourceId.Value && r.FacilityId == facilityId && r.IsActive);
+
+        if (!selectedResourceExists)
+            return new List<TimeSlotDto>();
+
+        int totalCapacity = resourceId.HasValue
+            ? 1
+            : activeResourceCount > 0 ? activeResourceCount : facility.MaxConcurrency;
 
         // Hedef günün başlangıç ve bitiş zamanı
         var dayStart = date.Date + facility.OpeningTime;
@@ -85,9 +79,9 @@ public class ReservationService : IReservationService
             var slotEnd = cursor.AddMinutes(slotDuration);
             var slotEndWithBuffer = cursor.AddMinutes(slotDuration + bufferMinutes);
 
-            // Bu zaman aralığında aktif olan randevu sayısını bul
             int overlappingCount = currentReservations.Count(r =>
                 r.StartTime < slotEndWithBuffer && r.EndTime > cursor &&
+                (!resourceId.HasValue || r.ResourceId == resourceId.Value) &&
                 (r.Status == ReservationStatus.Approved ||
                  r.Status == ReservationStatus.Pending ||
                  (r.Status == ReservationStatus.Locked && r.LockedUntil > DateTime.UtcNow)));
@@ -132,21 +126,11 @@ public class ReservationService : IReservationService
         if (IsPastOrCurrentBusinessTime(startTime))
             return false;
 
-        // Hizmet süresi hesapla
         int duration = facility.DefaultSlotDurationMinutes;
-        int buffer = facility.BufferMinutes;
+        const int buffer = 0;
 
-        if (serviceId.HasValue)
-        {
-            var service = await _context.FacilityServices
-                .FirstOrDefaultAsync(s => s.Id == serviceId.Value && s.FacilityId == facilityId && s.IsActive);
-
-            if (service != null)
-            {
-                duration = service.DurationMinutes;
-                buffer = service.BufferMinutes > 0 ? service.BufferMinutes : facility.BufferMinutes;
-            }
-        }
+        if (duration <= 0)
+            duration = 30;
 
         var endTime = startTime.AddMinutes(duration);
         var endTimeWithBuffer = startTime.AddMinutes(duration + buffer);
@@ -157,21 +141,15 @@ public class ReservationService : IReservationService
 
         int totalCapacity = activeResourceCount > 0 ? activeResourceCount : facility.MaxConcurrency;
 
-        // Çakışan aktif randevu sayısını bul
-        int overlappingCount = await _context.Reservations
-            .CountAsync(r => r.FacilityId == facilityId &&
-                             r.StartTime < endTimeWithBuffer &&
-                             r.EndTime > startTime &&
-                             r.Status != ReservationStatus.Cancelled &&
-                             (r.Status != ReservationStatus.Locked || r.LockedUntil > DateTime.UtcNow));
-
-        // Kapasite kontrolü: n < K
-        if (overlappingCount >= totalCapacity)
-            return false; // Kapasite dolu
-
         // Eğer belirli bir resource isteniyorsa, o resource müsait mi kontrol et
         if (resourceId.HasValue)
         {
+            var resourceExists = await _context.Resources
+                .AnyAsync(r => r.Id == resourceId.Value && r.FacilityId == facilityId && r.IsActive);
+
+            if (!resourceExists)
+                return false;
+
             var resourceConflict = await _context.Reservations
                 .AnyAsync(r => r.FacilityId == facilityId &&
                                r.ResourceId == resourceId.Value &&
@@ -183,25 +161,42 @@ public class ReservationService : IReservationService
             if (resourceConflict)
                 return false; // Bu kaynak dolu
         }
-        else if (activeResourceCount > 0)
+        else
         {
-            // Resource belirtilmemişse, müsait bir kaynak otomatik ata
-            var busyResourceIds = await _context.Reservations
-                .Where(r => r.FacilityId == facilityId &&
-                            r.ResourceId != null &&
-                            r.StartTime < endTimeWithBuffer &&
-                            r.EndTime > startTime &&
-                            r.Status != ReservationStatus.Cancelled &&
-                            (r.Status != ReservationStatus.Locked || r.LockedUntil > DateTime.UtcNow))
-                .Select(r => r.ResourceId!.Value)
-                .ToListAsync();
+            // Berber/personel seçilmediyse tesis genel kapasitesine göre kontrol et.
+            int overlappingCount = await _context.Reservations
+                .CountAsync(r => r.FacilityId == facilityId &&
+                                 r.StartTime < endTimeWithBuffer &&
+                                 r.EndTime > startTime &&
+                                 r.Status != ReservationStatus.Cancelled &&
+                                 (r.Status != ReservationStatus.Locked || r.LockedUntil > DateTime.UtcNow));
 
-            var freeResource = await _context.Resources
-                .FirstOrDefaultAsync(r => r.FacilityId == facilityId &&
-                                          r.IsActive &&
-                                          !busyResourceIds.Contains(r.Id));
+            if (overlappingCount >= totalCapacity)
+                return false; // Kapasite dolu
 
-            resourceId = freeResource?.Id;
+            if (activeResourceCount > 0)
+            {
+                // Resource belirtilmemişse, müsait bir kaynak otomatik ata
+                var busyResourceIds = await _context.Reservations
+                    .Where(r => r.FacilityId == facilityId &&
+                                r.ResourceId != null &&
+                                r.StartTime < endTimeWithBuffer &&
+                                r.EndTime > startTime &&
+                                r.Status != ReservationStatus.Cancelled &&
+                                (r.Status != ReservationStatus.Locked || r.LockedUntil > DateTime.UtcNow))
+                    .Select(r => r.ResourceId!.Value)
+                    .ToListAsync();
+
+                var freeResource = await _context.Resources
+                    .FirstOrDefaultAsync(r => r.FacilityId == facilityId &&
+                                              r.IsActive &&
+                                              !busyResourceIds.Contains(r.Id));
+
+                if (freeResource == null)
+                    return false;
+
+                resourceId = freeResource.Id;
+            }
         }
 
         // Kilitleme kaydı oluştur
@@ -313,7 +308,7 @@ public class ReservationService : IReservationService
     }
 
     /// <inheritdoc />
-    public async Task<List<CalendarDayDto>> GetFacilityAvailabilityCalendarAsync(Guid facilityId, DateTime startDate, DateTime endDate, Guid? serviceId = null)
+    public async Task<List<CalendarDayDto>> GetFacilityAvailabilityCalendarAsync(Guid facilityId, DateTime startDate, DateTime endDate, Guid? serviceId = null, Guid? resourceId = null)
     {
         var days = new List<CalendarDayDto>();
         var currentDate = startDate.Date;
@@ -321,7 +316,7 @@ public class ReservationService : IReservationService
 
         while (currentDate <= end)
         {
-            var slots = await GetAvailableTimeSlotsAsync(facilityId, currentDate, serviceId);
+            var slots = await GetAvailableTimeSlotsAsync(facilityId, currentDate, serviceId, resourceId);
             int availableSlots = slots.Count(s => s.IsAvailable);
 
             days.Add(new CalendarDayDto

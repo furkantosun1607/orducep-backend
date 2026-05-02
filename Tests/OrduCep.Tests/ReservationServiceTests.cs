@@ -79,6 +79,37 @@ public class ReservationServiceTests
     }
 
     [Fact]
+    public async Task LockTimeSlot_Allows_SameTime_For_Different_Resources()
+    {
+        var context = GetInMemoryDbContext();
+        var service = new ReservationService(context);
+        var facilityId = Guid.NewGuid();
+        var targetTime = DateTime.Today.AddDays(1).AddHours(8);
+        var barberOneId = Guid.NewGuid();
+        var barberTwoId = Guid.NewGuid();
+        var barberThreeId = Guid.NewGuid();
+
+        context.Facilities.Add(CreateFacility(facilityId));
+        context.Resources.AddRange(
+            new Resource { Id = barberOneId, FacilityId = facilityId, Name = "Helin", Type = ResourceType.Staff, IsActive = true },
+            new Resource { Id = barberTwoId, FacilityId = facilityId, Name = "Kerem", Type = ResourceType.Staff, IsActive = true },
+            new Resource { Id = barberThreeId, FacilityId = facilityId, Name = "Furkan", Type = ResourceType.Staff, IsActive = true }
+        );
+        await context.SaveChangesAsync();
+
+        var firstLock = await service.LockTimeSlotAsync(facilityId, targetTime, null, barberOneId, "user-1");
+        var secondLock = await service.LockTimeSlotAsync(facilityId, targetTime, null, barberTwoId, "user-2");
+        var thirdLock = await service.LockTimeSlotAsync(facilityId, targetTime, null, barberThreeId, "user-3");
+        var duplicateBarberLock = await service.LockTimeSlotAsync(facilityId, targetTime, null, barberOneId, "user-4");
+
+        Assert.True(firstLock);
+        Assert.True(secondLock);
+        Assert.True(thirdLock);
+        Assert.False(duplicateBarberLock);
+        Assert.Equal(3, await context.Reservations.CountAsync());
+    }
+
+    [Fact]
     public async Task LockTimeSlot_Rejects_PastStartTime()
     {
         var context = GetInMemoryDbContext();
