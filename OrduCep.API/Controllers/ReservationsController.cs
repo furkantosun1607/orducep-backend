@@ -1,5 +1,8 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using OrduCep.API;
 using OrduCep.Application.Interfaces;
 using OrduCep.Application.Services;
 using OrduCep.Domain.Entities;
@@ -47,8 +50,14 @@ public class ReservationsController : ControllerBase
     /// Randevuyu 5 dakika boyunca kilitler. Kapasite kontrolü yapılır.
     /// </summary>
     [HttpPost("lock")]
-    public async Task<IActionResult> LockTimeSlot([FromBody] LockRequest request)
+    public async Task<IActionResult> LockTimeSlot(
+        [FromBody] LockRequest request,
+        [FromServices] IApplicationDbContext context)
     {
+        var access = await EnsureReservableUserAsync(request.UserId, context);
+        if (!access.Allowed)
+            return StatusCode(access.StatusCode, new { Message = access.Message });
+
         var success = await _reservationService.LockTimeSlotAsync(
             request.FacilityId,
             request.StartTime,
@@ -67,8 +76,14 @@ public class ReservationsController : ControllerBase
     /// Kilitlenmiş randevuyu onaylar.
     /// </summary>
     [HttpPost("confirm")]
-    public async Task<IActionResult> ConfirmReservation([FromBody] ConfirmRequest request)
+    public async Task<IActionResult> ConfirmReservation(
+        [FromBody] ConfirmRequest request,
+        [FromServices] IApplicationDbContext context)
     {
+        var access = await EnsureReservableUserAsync(request.UserId, context);
+        if (!access.Allowed)
+            return StatusCode(access.StatusCode, new { Message = access.Message });
+
         var success = await _reservationService.ConfirmReservationAsync(request.FacilityId, request.StartTime, request.UserId);
 
         if (success)
@@ -289,6 +304,32 @@ public class ReservationsController : ControllerBase
     private static string BuildFullName(params string[] parts)
     {
         return string.Join(" ", parts.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()));
+    }
+
+    private static string HashPassword(string password)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+        return Convert.ToHexString(bytes);
+    }
+
+    private static async Task<(bool Allowed, int StatusCode, string Message)> EnsureReservableUserAsync(
+        string? userId,
+        IApplicationDbContext context)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            return (false, StatusCodes.Status400BadRequest, "Kullanıcı bilgisi zorunludur.");
+
+        if (!Guid.TryParse(userId, out var userGuid))
+            return (false, StatusCodes.Status400BadRequest, "Kullanıcı bilgisi geçersiz.");
+
+        var user = await context.MilitaryIdentityUsers.FirstOrDefaultAsync(u => u.Id == userGuid);
+        if (user == null)
+            return (false, StatusCodes.Status404NotFound, "Kullanıcı bulunamadı.");
+
+        if (!PersonnelAccessRules.CanUseFacilities(user.OwnerRank))
+            return (false, StatusCodes.Status403Forbidden, "Bu hesap askeri tesislerden faydalanamaz; yalnızca sorumlu olduğu birimleri yönetebilir.");
+
+        return (true, StatusCodes.Status200OK, string.Empty);
     }
 
     private static DateTime ToBusinessLocalTime(DateTime value)
@@ -707,7 +748,7 @@ public class ReservationsController : ControllerBase
                 s.FacilityId,
                 s.UserId,
                 s.Name,
-                Role = s.Role.ToString(),
+                Role = PersonnelAccessRules.DisplayStaffRole(user?.OwnerRank, s.Role),
                 IdentityNumber = user?.IdentityNumber ?? string.Empty,
                 PhoneNumber = user?.PhoneNumber ?? string.Empty,
                 Rank = user?.OwnerRank ?? string.Empty
@@ -731,11 +772,51 @@ public class ReservationsController : ControllerBase
         if (identityNumber.Length != 11)
             return BadRequest(new { Message = "Personel T.C. kimlik numarası 11 haneli olmalıdır." });
 
+        var firstName = request.FirstName?.Trim() ?? string.Empty;
+        var lastName = request.LastName?.Trim() ?? string.Empty;
+        var phoneNumber = request.PhoneNumber?.Trim() ?? string.Empty;
+        var personnelStatus = PersonnelAccessRules.NormalizeStatusLabel(request.Role);
+
+        if (!PersonnelAccessRules.IsKnownStatus(personnelStatus))
+            return BadRequest(new { Message = "Lütfen personel statüsünü seçiniz." });
+
         var user = await context.MilitaryIdentityUsers
             .FirstOrDefaultAsync(u => u.IdentityNumber == identityNumber);
 
         if (user == null)
-            return NotFound(new { Message = "Bu T.C. kimlik numarası ile kayıtlı kullanıcı bulunamadı. Önce normal kullanıcı kaydı oluşturulmalıdır." });
+        {
+            if (PersonnelAccessRules.RequiresExistingAccountForAssignment(personnelStatus))
+                return BadRequest(new { Message = $"{personnelStatus} statüsündeki personel önce normal kullanıcı hesabı açmalıdır." });
+
+            if (string.IsNullOrWhiteSpace(firstName) || string.IsNullOrWhiteSpace(lastName))
+                return BadRequest(new { Message = "Yeni personel için ad ve soyad zorunludur." });
+
+            user = new MilitaryIdentityUser
+            {
+                Id = Guid.NewGuid(),
+                IdentityNumber = identityNumber,
+                PasswordHash = HashPassword(identityNumber),
+                FirstName = firstName,
+                LastName = lastName,
+                PhoneNumber = phoneNumber,
+                Relation = "Kendisi",
+                OwnerRank = personnelStatus,
+                CreatedAtUtc = DateTime.UtcNow
+            };
+
+            context.MilitaryIdentityUsers.Add(user);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(firstName))
+                user.FirstName = firstName;
+            if (!string.IsNullOrWhiteSpace(lastName))
+                user.LastName = lastName;
+            if (!string.IsNullOrWhiteSpace(phoneNumber))
+                user.PhoneNumber = phoneNumber;
+
+            user.OwnerRank = personnelStatus;
+        }
 
         var userId = user.Id.ToString();
         var existing = await context.FacilityStaffs
@@ -773,7 +854,7 @@ public class ReservationsController : ControllerBase
             existing.FacilityId,
             existing.UserId,
             existing.Name,
-            Role = existing.Role.ToString(),
+            Role = PersonnelAccessRules.DisplayStaffRole(user.OwnerRank, existing.Role),
             user.IdentityNumber,
             user.PhoneNumber,
             Rank = user.OwnerRank,
@@ -1027,6 +1108,9 @@ public class CreateResourceRequest
 public class AddFacilityStaffRequest
 {
     public string IdentityNumber { get; set; } = string.Empty;
+    public string? FirstName { get; set; }
+    public string? LastName { get; set; }
+    public string? PhoneNumber { get; set; }
     public string Role { get; set; } = "Manager";
 }
 
