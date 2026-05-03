@@ -78,6 +78,22 @@ public class OrduevleriController : ControllerBase
             : Ok(orduevi);
     }
 
+    [HttpGet("{id:guid}/featured-image")]
+    public async Task<IActionResult> GetFeaturedImage(Guid id)
+    {
+        var image = await _context.Orduevleri
+            .Where(o => o.Id == id)
+            .Select(o => new
+            {
+                featuredImageUrl = o.FeaturedImageUrl
+            })
+            .FirstOrDefaultAsync();
+
+        return image == null
+            ? NotFound(new { Message = "Orduevi bulunamadı." })
+            : Ok(image);
+    }
+
     [HttpGet("{id:guid}/google-maps")]
     public async Task<IActionResult> GetGoogleMapsDetails(Guid id)
     {
