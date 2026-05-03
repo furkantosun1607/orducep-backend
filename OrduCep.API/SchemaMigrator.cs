@@ -84,12 +84,45 @@ public static class SchemaMigrator
             }
         }
 
+        await EnsureVoiceSessionsTableAsync(db);
+
         await NormalizeOrdueviScrapedColumnsAsync(db);
 
         // UserId kolonu nullable değilse nullable yap
         await MakeUserIdNullableAsync(db);
 
         Console.WriteLine("[SchemaMigrator] Schema kontrolü tamamlandı.");
+    }
+
+    private static async Task EnsureVoiceSessionsTableAsync(OrduCepDbContext db)
+    {
+        const string checkSql = """
+            SELECT COUNT(*) AS `Value`
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'VoiceSessions'
+            """;
+
+        var count = await db.Database.SqlQueryRaw<long>(checkSql).FirstOrDefaultAsync();
+        if (count > 0)
+            return;
+
+        Console.WriteLine("[SchemaMigrator] VoiceSessions tablosu ekleniyor...");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE `VoiceSessions` (
+                `Id` CHAR(36) NOT NULL,
+                `UserId` VARCHAR(255) NOT NULL DEFAULT '',
+                `Channel` VARCHAR(32) NOT NULL DEFAULT 'web',
+                `OrdueviId` CHAR(36) NULL,
+                `StateJson` LONGTEXT NOT NULL,
+                `ExpiresAtUtc` DATETIME NOT NULL,
+                `Status` VARCHAR(32) NOT NULL DEFAULT 'created',
+                `CreatedAtUtc` DATETIME NOT NULL,
+                `UpdatedAtUtc` DATETIME NULL,
+                PRIMARY KEY (`Id`),
+                INDEX `IX_VoiceSessions_UserId` (`UserId`)
+            )
+            """);
     }
 
     private static async Task NormalizeOrdueviScrapedColumnsAsync(OrduCepDbContext db)
