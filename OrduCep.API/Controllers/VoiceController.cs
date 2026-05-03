@@ -34,7 +34,7 @@ public class VoiceController : ControllerBase
 
     [HttpPost("realtime/call")]
     [Consumes("application/sdp", "text/plain")]
-    public async Task<IActionResult> CreateRealtimeCall([FromQuery] string userId, [FromQuery] Guid? ordueviId)
+    public async Task<IActionResult> CreateRealtimeCall([FromQuery] string userId, [FromQuery] Guid? ordueviId, [FromQuery] Guid? facilityId)
     {
         if (!VoiceAssistantEnabled())
             return StatusCode(503, new { Message = "Sesli asistan şu anda kapalı." });
@@ -54,7 +54,8 @@ public class VoiceController : ControllerBase
 
         var model = _configuration["OPENAI_REALTIME_MODEL"] ?? "gpt-realtime";
         var voice = _configuration["OPENAI_REALTIME_VOICE"] ?? "sage";
-        var sessionConfig = BuildRealtimeSessionConfig(model, voice, ordueviId);
+        var realtimeContext = await BuildRealtimeContextAsync(ordueviId, facilityId);
+        var sessionConfig = BuildRealtimeSessionConfig(model, voice, realtimeContext);
 
         using var form = new MultipartFormDataContent
         {
@@ -92,10 +93,10 @@ public class VoiceController : ControllerBase
             {
                 "search_orduevis" => await SearchOrduevisAsync(request.Arguments),
                 "list_facilities" => await ListFacilitiesAsync(request.Arguments, request.OrdueviId),
-                "get_facility_info" => await GetFacilityInfoAsync(request.Arguments),
-                "find_slots" => await WithReservableUserAsync(request.UserId, () => FindSlotsAsync(request.Arguments)),
-                "lock_reservation" => await WithReservableUserAsync(request.UserId, () => LockReservationAsync(request.Arguments, request.UserId)),
-                "confirm_reservation" => await WithReservableUserAsync(request.UserId, () => ConfirmReservationAsync(request.Arguments, request.UserId)),
+                "get_facility_info" => await GetFacilityInfoAsync(request.Arguments, request.FacilityId),
+                "find_slots" => await WithReservableUserAsync(request.UserId, () => FindSlotsAsync(request.Arguments, request.FacilityId)),
+                "lock_reservation" => await WithReservableUserAsync(request.UserId, () => LockReservationAsync(request.Arguments, request.UserId, request.FacilityId)),
+                "confirm_reservation" => await WithReservableUserAsync(request.UserId, () => ConfirmReservationAsync(request.Arguments, request.UserId, request.FacilityId)),
                 "list_my_reservations" => await WithKnownUserAsync(request.UserId, () => ListMyReservationsAsync(request.UserId)),
                 _ => new VoiceToolResult(false, $"Bilinmeyen araç: {request.ToolName}", null)
             };
@@ -143,8 +144,7 @@ public class VoiceController : ControllerBase
         var session = await GetOrCreateTextSessionAsync(request, user.Id.ToString());
         var state = ReadDialogState(session.StateJson);
 
-        if (request.OrdueviId.HasValue)
-            await SetOrdueviContextAsync(state, request.OrdueviId.Value);
+        await ApplyClientContextAsync(state, request.OrdueviId, request.FacilityId);
 
         var reply = await BuildTextAssistantReplyAsync(state, request.Message, user);
 
@@ -282,9 +282,9 @@ public class VoiceController : ControllerBase
             : new VoiceToolResult(true, "Aktif hizmetler listelendi.", facilities);
     }
 
-    private async Task<VoiceToolResult> GetFacilityInfoAsync(JsonElement arguments)
+    private async Task<VoiceToolResult> GetFacilityInfoAsync(JsonElement arguments, Guid? fallbackFacilityId = null)
     {
-        var facilityId = GetGuid(arguments, "facilityId");
+        var facilityId = GetGuid(arguments, "facilityId") ?? fallbackFacilityId;
         if (!facilityId.HasValue)
             return new VoiceToolResult(false, "Hangi hizmet hakkında bilgi istediğinizi anlayamadım.", null);
 
@@ -321,9 +321,9 @@ public class VoiceController : ControllerBase
         return new VoiceToolResult(true, "Hizmet bilgisi bulundu.", data);
     }
 
-    private async Task<VoiceToolResult> FindSlotsAsync(JsonElement arguments)
+    private async Task<VoiceToolResult> FindSlotsAsync(JsonElement arguments, Guid? fallbackFacilityId = null)
     {
-        var facilityId = GetGuid(arguments, "facilityId");
+        var facilityId = GetGuid(arguments, "facilityId") ?? fallbackFacilityId;
         var date = GetDate(arguments, "date");
         if (!facilityId.HasValue || !date.HasValue)
             return new VoiceToolResult(false, "Müsait saat bakmak için hizmet ve tarih gereklidir.", null);
@@ -348,9 +348,9 @@ public class VoiceController : ControllerBase
             : new VoiceToolResult(true, "Uygun saatler bulundu. En fazla üç seçenek okuyun.", available);
     }
 
-    private async Task<VoiceToolResult> LockReservationAsync(JsonElement arguments, string userId)
+    private async Task<VoiceToolResult> LockReservationAsync(JsonElement arguments, string userId, Guid? fallbackFacilityId = null)
     {
-        var facilityId = GetGuid(arguments, "facilityId");
+        var facilityId = GetGuid(arguments, "facilityId") ?? fallbackFacilityId;
         var startTime = GetDateTime(arguments, "startTime");
         if (!facilityId.HasValue || !startTime.HasValue)
             return new VoiceToolResult(false, "Randevu kilitlemek için hizmet ve saat gereklidir.", null);
@@ -368,9 +368,9 @@ public class VoiceController : ControllerBase
             : new VoiceToolResult(false, "Bu saat artık uygun değil. Lütfen başka saat seçin.", null);
     }
 
-    private async Task<VoiceToolResult> ConfirmReservationAsync(JsonElement arguments, string userId)
+    private async Task<VoiceToolResult> ConfirmReservationAsync(JsonElement arguments, string userId, Guid? fallbackFacilityId = null)
     {
-        var facilityId = GetGuid(arguments, "facilityId");
+        var facilityId = GetGuid(arguments, "facilityId") ?? fallbackFacilityId;
         var startTime = GetDateTime(arguments, "startTime");
         if (!facilityId.HasValue || !startTime.HasValue)
             return new VoiceToolResult(false, "Randevuyu kesinleştirmek için hizmet ve saat gereklidir.", null);
@@ -485,17 +485,101 @@ public class VoiceController : ControllerBase
         }
     }
 
+    private async Task ApplyClientContextAsync(VoiceDialogState state, Guid? ordueviId, Guid? facilityId)
+    {
+        var previousCurrentOrdueviId = state.CurrentOrdueviId;
+        var previousCurrentFacilityId = state.CurrentFacilityId;
+
+        if (ordueviId.HasValue)
+        {
+            await SetCurrentOrdueviContextAsync(state, ordueviId.Value);
+        }
+        else
+        {
+            state.CurrentOrdueviId = null;
+            state.CurrentOrdueviName = string.Empty;
+        }
+
+        if (facilityId.HasValue)
+        {
+            await SetCurrentFacilityContextAsync(state, facilityId.Value);
+        }
+        else
+        {
+            if (state.SelectedFacilityId.HasValue && state.SelectedFacilityId == state.CurrentFacilityId)
+                ClearSelectedFacility(state);
+
+            state.CurrentFacilityId = null;
+            state.CurrentFacilityName = string.Empty;
+        }
+
+        var ordueviChanged = previousCurrentOrdueviId != state.CurrentOrdueviId;
+        var facilityChanged = previousCurrentFacilityId != state.CurrentFacilityId;
+
+        if (state.CurrentOrdueviId.HasValue && (!state.SelectedOrdueviId.HasValue || ordueviChanged))
+        {
+            state.SelectedOrdueviId = state.CurrentOrdueviId;
+            state.SelectedOrdueviName = state.CurrentOrdueviName;
+            state.SearchResults.Clear();
+        }
+
+        if (state.CurrentFacilityId.HasValue && (!state.SelectedFacilityId.HasValue || facilityChanged))
+        {
+            state.SelectedFacilityId = state.CurrentFacilityId;
+            state.SelectedFacilityName = state.CurrentFacilityName;
+            state.OfferedSlots.Clear();
+        }
+    }
+
+    private async Task SetCurrentOrdueviContextAsync(VoiceDialogState state, Guid ordueviId)
+    {
+        var orduevi = await _context.Orduevleri.FirstOrDefaultAsync(o => o.Id == ordueviId);
+        if (orduevi == null)
+            return;
+
+        state.CurrentOrdueviId = orduevi.Id;
+        state.CurrentOrdueviName = orduevi.Name;
+    }
+
+    private async Task SetCurrentFacilityContextAsync(VoiceDialogState state, Guid facilityId)
+    {
+        var facility = await _context.Facilities
+            .Include(f => f.Orduevi)
+            .FirstOrDefaultAsync(f => f.Id == facilityId && f.IsActive);
+
+        if (facility == null)
+            return;
+
+        state.CurrentFacilityId = facility.Id;
+        state.CurrentFacilityName = facility.Name;
+        state.CurrentOrdueviId = facility.OrdueviId;
+        state.CurrentOrdueviName = facility.Orduevi.Name;
+    }
+
     private async Task<string> BuildTextAssistantReplyAsync(VoiceDialogState state, string message, MilitaryIdentityUser user)
     {
         if (string.IsNullOrWhiteSpace(message))
             return "Mesajınızı alamadım. Lütfen tekrar yazar mısınız?";
 
         var normalized = NormalizeText(message);
+        var modelDecision = await TryClassifyTextTurnAsync(state, message, user);
+        if (modelDecision != null)
+        {
+            var modelReply = await TryHandleModelDecisionAsync(state, message, normalized, user, modelDecision);
+            if (!string.IsNullOrWhiteSpace(modelReply))
+                return modelReply;
+        }
+
+        if (IsGreetingOnly(normalized))
+            return FormatGreetingReply(state);
+
+        if (MentionsCurrentScreen(normalized) && !LooksLikeReservationIntent(normalized))
+            return FormatCurrentScreenReply(state);
 
         if (state.PendingFacilityId.HasValue && IsNegative(normalized))
         {
             ClearPendingReservation(state);
-            return "Tamam, randevuyu kesinleştirmedim. Başka bir saat veya hizmet seçebilirsiniz.";
+            return "Tamam, onaylamadım. Başka saat seçebiliriz.";
         }
 
         if (state.PendingFacilityId.HasValue && IsPositiveConfirmation(normalized))
@@ -504,14 +588,20 @@ public class VoiceController : ControllerBase
         if (TrySelectSearchResult(state, normalized, out var selectedOrduevi))
         {
             await SetOrdueviContextAsync(state, selectedOrduevi.Id);
-            return $"{state.SelectedOrdueviName} seçildi. Hangi hizmet için yardımcı olayım?";
+            return $"{state.SelectedOrdueviName} seçildi. Hangi birim?";
         }
+
+        if (LooksLikeReservationCancelIntent(normalized))
+            return await HandleReservationCancelTextAsync(user.Id.ToString());
 
         if (normalized.Contains("randevular"))
             return await FormatUserReservationsAsync(user.Id.ToString());
 
         if (normalized.Contains("telefon"))
             return await FormatPhoneInfoAsync(state);
+
+        if (LooksLikeFacilityInfoIntent(normalized) && !LooksLikeExplicitReservationAction(normalized))
+            return await FormatFacilityInfoTextAsync(state);
 
         if (LooksLikeOrdueviSearch(normalized) && !LooksLikeReservationIntent(normalized))
             return await HandleOrdueviSearchAsync(state, message);
@@ -520,9 +610,249 @@ public class VoiceController : ControllerBase
             return await HandleReservationTextAsync(state, message, normalized, user);
 
         if (!state.SelectedOrdueviId.HasValue)
-            return "Size orduevi bulma, tesis bilgisi ve randevu alma konusunda yardımcı olabilirim. Örneğin, Amasra'da orduevi bul yazabilirsiniz.";
+            return "Orduevi adını yazın; randevu, telefon veya hizmet bilgisine bakayım.";
 
-        return "Bu orduevi için hizmet bilgisi okuyabilir, uygun saat bakabilir veya randevularınızı listeleyebilirim.";
+        return FormatCurrentScreenReply(state);
+    }
+
+    private async Task<VoiceModelDecision?> TryClassifyTextTurnAsync(VoiceDialogState state, string message, MilitaryIdentityUser user)
+    {
+        if (!TextAssistantModelEnabled())
+            return null;
+
+        var apiKey = _configuration["OPENAI_API_KEY"];
+        if (string.IsNullOrWhiteSpace(apiKey))
+            return null;
+
+        var model = _configuration["OPENAI_TEXT_MODEL"] ?? "gpt-5.2";
+        if (string.IsNullOrWhiteSpace(model))
+            return null;
+
+        var payload = new
+        {
+            model,
+            input = new object[]
+            {
+                new
+                {
+                    role = "system",
+                    content = """
+                        Sen OrduCep yazılı yardım asistanının niyet yönlendiricisisin.
+                        Sadece geçerli JSON döndür, markdown veya açıklama yazma.
+                        Amaç: kullanıcının Türkçe mesajını güvenli backend aksiyonuna çevirmek.
+                        Randevu kesinleştirme sadece bekleyen randevu varken ve kullanıcı açıkça evet/onaylıyorum/tamam diyorsa confirm_pending olmalı.
+                        Kullanıcı iptal/sil/vazgeç + randevu diyorsa cancel_reservation_info olmalı; yeni saat önerme.
+                        Kullanıcı sadece selam verirse greet olmalı.
+                        Kullanıcı bu ekran/bu sayfa/şu an açık olan yer diyorsa current_context olmalı.
+                        Kullanıcı başka şehir/orduevi adı söylüyorsa orduevi_search veya reservation_request içinde ordueviQuery ver.
+                        Action değerlerinden birini seç: greet, current_context, list_reservations, cancel_reservation_info, phone_info, facility_info, orduevi_search, reservation_request, confirm_pending, reject_pending, select_search_result, select_slot, fallback.
+                        JSON şeması: {"action":"reservation_request","ordueviQuery":"","facilityHint":"","date":"","time":"","choice":null}
+                        date alanı gerekiyorsa YYYY-MM-DD yaz. time alanı gerekiyorsa HH:mm yaz. choice alanı 1 tabanlı sayı olsun.
+                        """
+                },
+                new
+                {
+                    role = "user",
+                    content = BuildTextModelUserPrompt(state, message, user)
+                }
+            },
+            max_output_tokens = 260
+        };
+
+        var client = _httpClientFactory.CreateClient();
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses")
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json")
+        };
+        httpRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+
+        try
+        {
+            using var response = await client.SendAsync(httpRequest, HttpContext.RequestAborted);
+            var body = await response.Content.ReadAsStringAsync(HttpContext.RequestAborted);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            var outputText = ExtractResponseOutputText(body);
+            if (string.IsNullOrWhiteSpace(outputText))
+                return null;
+
+            var json = ExtractFirstJsonObject(outputText);
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
+            return JsonSerializer.Deserialize<VoiceModelDecision>(json, JsonOptions);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string BuildTextModelUserPrompt(VoiceDialogState state, string message, MilitaryIdentityUser user)
+    {
+        var modelState = new
+        {
+            today = DateTime.Today.ToString("yyyy-MM-dd"),
+            canUseFacilities = PersonnelAccessRules.CanUseFacilities(user.OwnerRank),
+            current = new
+            {
+                ordueviId = state.CurrentOrdueviId,
+                ordueviName = state.CurrentOrdueviName,
+                facilityId = state.CurrentFacilityId,
+                facilityName = state.CurrentFacilityName
+            },
+            selected = new
+            {
+                ordueviId = state.SelectedOrdueviId,
+                ordueviName = state.SelectedOrdueviName,
+                facilityId = state.SelectedFacilityId,
+                facilityName = state.SelectedFacilityName,
+                date = state.SelectedDate?.ToString("yyyy-MM-dd")
+            },
+            pendingReservation = state.PendingFacilityId.HasValue
+                ? new
+                {
+                    facilityName = state.PendingFacilityName,
+                    startTime = state.PendingStartTime?.ToString("yyyy-MM-dd HH:mm")
+                }
+                : null,
+            offeredSlots = state.OfferedSlots.Select((slot, index) => new
+            {
+                choice = index + 1,
+                startTime = slot.StartTime.ToString("yyyy-MM-dd HH:mm")
+            }),
+            searchResults = state.SearchResults.Select((result, index) => new
+            {
+                choice = index + 1,
+                result.Name,
+                result.Location
+            }),
+            message
+        };
+
+        return JsonSerializer.Serialize(modelState, JsonOptions);
+    }
+
+    private async Task<string?> TryHandleModelDecisionAsync(
+        VoiceDialogState state,
+        string message,
+        string normalized,
+        MilitaryIdentityUser user,
+        VoiceModelDecision decision)
+    {
+        var action = NormalizeToolName(decision.Action);
+        return action switch
+        {
+            "greet" => FormatGreetingReply(state),
+            "current_context" => FormatCurrentScreenReply(state),
+            "list_reservations" => await FormatUserReservationsAsync(user.Id.ToString()),
+            "cancel_reservation_info" => await HandleReservationCancelTextAsync(user.Id.ToString()),
+            "phone_info" => await FormatPhoneInfoAsync(state),
+            "facility_info" => await HandleModelFacilityInfoAsync(state, decision),
+            "orduevi_search" => await HandleOrdueviSearchAsync(state, FirstNonEmpty(decision.OrdueviQuery, message)),
+            "reservation_request" => await HandleModelReservationRequestAsync(state, message, user, decision),
+            "select_search_result" => await HandleModelSearchSelectionAsync(state, decision),
+            "select_slot" => await HandleModelSlotSelectionAsync(state, message, user, decision),
+            "confirm_pending" => state.PendingFacilityId.HasValue
+                ? await ConfirmPendingReservationAsync(state, user.Id.ToString())
+                : "Onaylanacak bekleyen randevu yok.",
+            "reject_pending" => RejectPendingReservation(state),
+            _ => null
+        };
+    }
+
+    private async Task<string> HandleModelFacilityInfoAsync(VoiceDialogState state, VoiceModelDecision decision)
+    {
+        await ApplyFacilityHintAsync(state, decision.FacilityHint, reservableOnly: false);
+        return await FormatFacilityInfoTextAsync(state);
+    }
+
+    private async Task<string> HandleModelReservationRequestAsync(
+        VoiceDialogState state,
+        string message,
+        MilitaryIdentityUser user,
+        VoiceModelDecision decision)
+    {
+        if (!PersonnelAccessRules.CanUseFacilities(user.OwnerRank))
+            return "Bu hesap askeri tesislerden faydalanamaz; yalnızca sorumlu olduğu birimleri yönetebilir.";
+
+        if (!string.IsNullOrWhiteSpace(decision.OrdueviQuery) &&
+            (string.IsNullOrWhiteSpace(state.SelectedOrdueviName) ||
+             !NormalizeText(decision.OrdueviQuery).Contains(NormalizeText(state.SelectedOrdueviName))))
+        {
+            var results = await SearchOrduevisForDialogAsync(decision.OrdueviQuery);
+            if (results.Count == 1)
+                await SetOrdueviContextAsync(state, results[0].Id);
+            else if (results.Count > 1)
+            {
+                state.SearchResults = results;
+                return "Hangi orduevi? " + string.Join("; ", results.Select((r, i) => $"{i + 1}. {r.Name}"));
+            }
+        }
+
+        await ApplyFacilityHintAsync(state, decision.FacilityHint, reservableOnly: true);
+
+        var syntheticMessage = string.Join(' ', new[]
+        {
+            message,
+            decision.FacilityHint,
+            decision.Date,
+            decision.Time
+        }.Where(part => !string.IsNullOrWhiteSpace(part)));
+        var syntheticNormalized = NormalizeText(syntheticMessage);
+
+        return await HandleReservationTextAsync(state, syntheticMessage, syntheticNormalized, user);
+    }
+
+    private async Task<string> HandleModelSearchSelectionAsync(VoiceDialogState state, VoiceModelDecision decision)
+    {
+        if (TrySelectSearchResultByChoice(state, decision.Choice, out var selected))
+        {
+            await SetOrdueviContextAsync(state, selected.Id);
+            return $"{selected.Name} seçildi. Hangi birim?";
+        }
+
+        return "Hangi seçeneği istediğinizi anlayamadım. 1, 2 veya 3 yazabilirsiniz.";
+    }
+
+    private async Task<string> HandleModelSlotSelectionAsync(
+        VoiceDialogState state,
+        string message,
+        MilitaryIdentityUser user,
+        VoiceModelDecision decision)
+    {
+        if (!PersonnelAccessRules.CanUseFacilities(user.OwnerRank))
+            return "Bu hesap askeri tesislerden faydalanamaz; yalnızca sorumlu olduğu birimleri yönetebilir.";
+
+        if (TrySelectOfferedSlotByChoice(state, decision.Choice, out var choiceStartTime))
+            return await LockPendingReservationAsync(state, user.Id.ToString(), choiceStartTime);
+
+        var synthetic = string.Join(' ', new[] { message, decision.Time }.Where(part => !string.IsNullOrWhiteSpace(part)));
+        return await HandleReservationTextAsync(state, synthetic, NormalizeText(synthetic), user);
+    }
+
+    private async Task ApplyFacilityHintAsync(VoiceDialogState state, string? facilityHint, bool reservableOnly)
+    {
+        if (!state.SelectedOrdueviId.HasValue || string.IsNullOrWhiteSpace(facilityHint))
+            return;
+
+        var normalizedHint = NormalizeText(facilityHint);
+        var query = _context.Facilities
+            .Where(f => f.OrdueviId == state.SelectedOrdueviId.Value && f.IsActive);
+
+        if (reservableOnly)
+            query = query.Where(f => f.AppointmentMode != AppointmentMode.WalkInOnly);
+
+        var facilities = await query.OrderBy(f => f.Name).ToListAsync();
+        var facility = facilities.FirstOrDefault(f => FacilityMatchesText(f, normalizedHint)) ??
+                       facilities.FirstOrDefault(f => NormalizeText(f.Name).Contains(normalizedHint));
+
+        if (facility == null)
+            return;
+
+        state.SelectedFacilityId = facility.Id;
+        state.SelectedFacilityName = facility.Name;
     }
 
     private async Task<string> HandleOrdueviSearchAsync(VoiceDialogState state, string message)
@@ -536,10 +866,10 @@ public class VoiceController : ControllerBase
         if (results.Count == 1)
         {
             await SetOrdueviContextAsync(state, results[0].Id);
-            return $"{results[0].Name} seçildi. Hangi hizmet için yardımcı olayım?";
+            return $"{results[0].Name} seçildi. Hangi birim?";
         }
 
-        return "Şu seçenekleri buldum: " + string.Join("; ", results.Select((r, i) => $"{i + 1}. {r.Name}")) + ". Hangisini seçmek istersiniz?";
+        return "Bulduklarım: " + string.Join("; ", results.Select((r, i) => $"{i + 1}. {r.Name}")) + ". Hangisi?";
     }
 
     private async Task<string> HandleReservationTextAsync(VoiceDialogState state, string message, string normalized, MilitaryIdentityUser user)
@@ -556,21 +886,24 @@ public class VoiceController : ControllerBase
                 return "Önce orduevini netleştirelim: " + string.Join("; ", results.Select((r, i) => $"{i + 1}. {r.Name}")) + ". Hangisini seçmek istersiniz?";
             }
 
-            return "Randevu için önce hangi orduevi olduğunu yazmanız gerekiyor. Örneğin: Amasra Denizciler Misafirhanesi berber randevusu.";
+            return "Randevu için hangi orduevi?";
         }
 
         var facility = await FindDialogFacilityAsync(state, normalized);
         if (facility == null)
-            return await FormatReservableFacilitiesAsync(state.SelectedOrdueviId.Value);
+            return await FormatReservableFacilitiesAsync(state);
 
         state.SelectedFacilityId = facility.Id;
         state.SelectedFacilityName = facility.Name;
 
         var requestedDate = ExtractRequestedDate(message, normalized) ?? state.SelectedDate;
         if (!requestedDate.HasValue)
-            return $"{facility.Name} için hangi tarihe bakalım? Örneğin yarın sabah yazabilirsiniz.";
+            return $"{facility.Name}: hangi tarih?";
 
         state.SelectedDate = requestedDate.Value.Date;
+
+        if (state.OfferedSlots.Count > 0 && TrySelectOfferedSlot(state, normalized, out var offeredStartTime))
+            return await LockPendingReservationAsync(state, user.Id.ToString(), offeredStartTime);
 
         var requestedTime = ExtractRequestedTime(normalized);
         if (requestedTime.HasValue && state.OfferedSlots.Count > 0)
@@ -590,20 +923,21 @@ public class VoiceController : ControllerBase
         {
             var selectedSlot = available.FirstOrDefault(s => s.StartTime.Hour == requestedTime.Value.Hours && s.StartTime.Minute == requestedTime.Value.Minutes);
             if (selectedSlot == null)
-                return $"{requestedDate.Value:dd.MM.yyyy} tarihinde {requestedTime.Value:hh\\:mm} için uygun saat bulamadım. Başka bir saat ister misiniz?";
+                return $"{requestedDate.Value:dd.MM.yyyy} {requestedTime.Value:hh\\:mm} uygun değil. Başka saat?";
 
             return await LockPendingReservationAsync(state, user.Id.ToString(), selectedSlot.StartTime);
         }
 
         var firstSlots = available.Take(3).ToList();
         if (firstSlots.Count == 0)
-            return $"{requestedDate.Value:dd.MM.yyyy} tarihinde {facility.Name} için uygun saat bulamadım. Başka bir tarih deneyelim mi?";
+            return $"{facility.Name}: {requestedDate.Value:dd.MM.yyyy} dolu. Başka tarih?";
 
         state.OfferedSlots = firstSlots
             .Select(s => new VoiceOfferedSlot { StartTime = s.StartTime })
             .ToList();
 
-        return $"{facility.Name} için uygun saatler: {string.Join(", ", firstSlots.Select(s => s.StartTime.ToString("HH:mm")))}. Hangisini seçmek istersiniz?";
+        var place = string.IsNullOrWhiteSpace(state.SelectedOrdueviName) ? string.Empty : $"{state.SelectedOrdueviName} / ";
+        return $"{place}{facility.Name}: {string.Join(", ", firstSlots.Select(s => s.StartTime.ToString("HH:mm")))}. Hangisi?";
     }
 
     private async Task<string> LockPendingReservationAsync(VoiceDialogState state, string userId, DateTime startTime)
@@ -620,7 +954,7 @@ public class VoiceController : ControllerBase
         state.PendingStartTime = startTime;
         state.OfferedSlots.Clear();
 
-        return $"{state.PendingFacilityName} için {startTime:dd.MM.yyyy HH:mm} randevusunu onaylıyor musunuz? Lütfen evet veya onaylıyorum yazın.";
+        return $"Onaylıyor musunuz: {state.PendingFacilityName}, {startTime:dd.MM.yyyy HH:mm}?";
     }
 
     private async Task<string> ConfirmPendingReservationAsync(VoiceDialogState state, string userId)
@@ -634,8 +968,24 @@ public class VoiceController : ControllerBase
         ClearPendingReservation(state);
 
         return success
-            ? $"{facilityName} için {startTime:dd.MM.yyyy HH:mm} randevunuz oluşturuldu."
-            : "Randevu kesinleştirilemedi. Süre dolmuş veya saat artık uygun olmayabilir.";
+            ? $"Randevu oluşturuldu: {facilityName}, {startTime:dd.MM.yyyy HH:mm}."
+            : "Randevu kesinleşmedi. Süre dolmuş olabilir.";
+    }
+
+    private async Task<string> HandleReservationCancelTextAsync(string userId)
+    {
+        var reservations = await _reservationService.GetUserReservationsAsync(userId);
+        var active = reservations
+            .Where(r => r.Status != "Cancelled" && r.StartTime > DateTime.Now)
+            .OrderBy(r => r.StartTime)
+            .Take(3)
+            .ToList();
+
+        if (active.Count == 0)
+            return "İptal edilecek aktif randevu yok.";
+
+        return "İptal için Profilim > Randevularım. Aktif: " +
+               string.Join("; ", active.Select(r => $"{r.FacilityName} {r.StartTime:dd.MM HH:mm}"));
     }
 
     private async Task<string> FormatUserReservationsAsync(string userId)
@@ -650,7 +1000,7 @@ public class VoiceController : ControllerBase
         if (active.Count == 0)
             return "Aktif randevunuz bulunmuyor.";
 
-        return "Randevularınız: " + string.Join("; ", active.Select(r => $"{r.FacilityName} {r.StartTime:dd.MM.yyyy HH:mm}"));
+        return "Randevularınız: " + string.Join("; ", active.Select(r => $"{r.FacilityName} {r.StartTime:dd.MM HH:mm}"));
     }
 
     private async Task<string> FormatPhoneInfoAsync(VoiceDialogState state)
@@ -664,10 +1014,50 @@ public class VoiceController : ControllerBase
             : $"{orduevi.Name} telefon numarası: {orduevi.ContactNumber}.";
     }
 
-    private async Task<string> FormatReservableFacilitiesAsync(Guid ordueviId)
+    private async Task<string> FormatFacilityInfoTextAsync(VoiceDialogState state)
     {
+        if (state.SelectedFacilityId.HasValue)
+        {
+            var facility = await _context.Facilities
+                .Include(f => f.Services)
+                .FirstOrDefaultAsync(f => f.Id == state.SelectedFacilityId.Value && f.IsActive);
+
+            if (facility == null)
+                return "Bu birim sistemde bulunamadı.";
+
+            var services = facility.Services
+                .Where(s => s.IsActive)
+                .OrderBy(s => s.ServiceName)
+                .Take(3)
+                .Select(s => s.Price > 0 ? $"{s.ServiceName} {s.Price:0.##} TL" : s.ServiceName)
+                .ToList();
+
+            var serviceText = services.Count > 0 ? $" Hizmetler: {string.Join(", ", services)}." : string.Empty;
+            return $"{facility.Name}: {facility.OpeningTime:hh\\:mm}-{facility.ClosingTime:hh\\:mm}.{serviceText}";
+        }
+
+        if (!state.SelectedOrdueviId.HasValue)
+            return "Hangi orduevi veya birim?";
+
         var facilities = await _context.Facilities
-            .Where(f => f.OrdueviId == ordueviId && f.IsActive && f.AppointmentMode != AppointmentMode.WalkInOnly)
+            .Where(f => f.OrdueviId == state.SelectedOrdueviId.Value && f.IsActive)
+            .OrderBy(f => f.Name)
+            .Take(5)
+            .Select(f => f.Name)
+            .ToListAsync();
+
+        return facilities.Count == 0
+            ? "Bu orduevi için sistemde aktif birim yok."
+            : $"{state.SelectedOrdueviName}: {string.Join(", ", facilities)}.";
+    }
+
+    private async Task<string> FormatReservableFacilitiesAsync(VoiceDialogState state)
+    {
+        if (!state.SelectedOrdueviId.HasValue)
+            return "Önce orduevi seçelim.";
+
+        var facilities = await _context.Facilities
+            .Where(f => f.OrdueviId == state.SelectedOrdueviId.Value && f.IsActive && f.AppointmentMode != AppointmentMode.WalkInOnly)
             .OrderBy(f => f.Name)
             .Take(5)
             .Select(f => f.Name)
@@ -675,7 +1065,7 @@ public class VoiceController : ControllerBase
 
         return facilities.Count == 0
             ? "Bu orduevi için randevulu birim bulamadım."
-            : "Hangi randevulu birim için işlem yapalım? " + string.Join(", ", facilities) + ".";
+            : $"{state.SelectedOrdueviName}: {string.Join(", ", facilities)}. Hangisi?";
     }
 
     private async Task<Facility?> FindDialogFacilityAsync(VoiceDialogState state, string normalized)
@@ -753,6 +1143,7 @@ public class VoiceController : ControllerBase
 
         state.SelectedOrdueviId = orduevi.Id;
         state.SelectedOrdueviName = orduevi.Name;
+        ClearSelectedFacility(state);
         state.SearchResults.Clear();
     }
 
@@ -786,6 +1177,52 @@ public class VoiceController : ControllerBase
         return true;
     }
 
+    private static bool TrySelectSearchResultByChoice(VoiceDialogState state, int? choice, out VoiceSearchResult result)
+    {
+        result = default!;
+        if (!choice.HasValue)
+            return false;
+
+        var index = choice.Value - 1;
+        if (index < 0 || index >= state.SearchResults.Count)
+            return false;
+
+        result = state.SearchResults[index];
+        return true;
+    }
+
+    private static bool TrySelectOfferedSlot(VoiceDialogState state, string normalized, out DateTime startTime)
+    {
+        startTime = default;
+        var index = normalized.Contains("birinci") || Regex.IsMatch(normalized, @"\b1\b")
+            ? 0
+            : normalized.Contains("ikinci") || Regex.IsMatch(normalized, @"\b2\b")
+                ? 1
+                : normalized.Contains("ucuncu") || Regex.IsMatch(normalized, @"\b3\b")
+                    ? 2
+                    : -1;
+
+        if (index < 0 || index >= state.OfferedSlots.Count)
+            return false;
+
+        startTime = state.OfferedSlots[index].StartTime;
+        return true;
+    }
+
+    private static bool TrySelectOfferedSlotByChoice(VoiceDialogState state, int? choice, out DateTime startTime)
+    {
+        startTime = default;
+        if (!choice.HasValue)
+            return false;
+
+        var index = choice.Value - 1;
+        if (index < 0 || index >= state.OfferedSlots.Count)
+            return false;
+
+        startTime = state.OfferedSlots[index].StartTime;
+        return true;
+    }
+
     private static string ExtractSearchQuery(string message)
     {
         var cleaned = message
@@ -811,6 +1248,22 @@ public class VoiceController : ControllerBase
 
         if (normalized.Contains("bugun"))
             return today;
+
+        var isoMatch = Regex.Match(original, @"\b(?<year>\d{4})-(?<month>\d{1,2})-(?<day>\d{1,2})\b");
+        if (isoMatch.Success)
+        {
+            try
+            {
+                return new DateTime(
+                    int.Parse(isoMatch.Groups["year"].Value),
+                    int.Parse(isoMatch.Groups["month"].Value),
+                    int.Parse(isoMatch.Groups["day"].Value));
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         var match = Regex.Match(original, @"\b(?<day>\d{1,2})[./-](?<month>\d{1,2})(?:[./-](?<year>\d{2,4}))?\b");
         if (!match.Success)
@@ -853,6 +1306,51 @@ public class VoiceController : ControllerBase
                normalized.Contains("izmir");
     }
 
+    private static bool MentionsCurrentScreen(string normalized)
+    {
+        return normalized.Contains("ekran") ||
+               normalized.Contains("sayfa") ||
+               normalized.Contains("acik olan") ||
+               normalized.Contains("su an") ||
+               normalized.Contains("suan") ||
+               normalized.Contains("goremiyor") ||
+               normalized.Contains("goruyor");
+    }
+
+    private static string FormatCurrentScreenReply(VoiceDialogState state)
+    {
+        if (!string.IsNullOrWhiteSpace(state.CurrentFacilityName))
+            return $"Ekran bağlamı: {state.CurrentOrdueviName} / {state.CurrentFacilityName}. Bununla mı, başka yer mi?";
+
+        if (!string.IsNullOrWhiteSpace(state.CurrentOrdueviName))
+            return $"Ekran bağlamı: {state.CurrentOrdueviName}. Buradan mı, başka yer mi?";
+
+        if (!string.IsNullOrWhiteSpace(state.SelectedOrdueviName))
+            return $"Seçili bağlam: {state.SelectedOrdueviName}. Hangi işlem?";
+
+        return "Ekran bağlamı gelmedi. Orduevi adını yazın.";
+    }
+
+    private static string FormatGreetingReply(VoiceDialogState state)
+    {
+        var context = !string.IsNullOrWhiteSpace(state.CurrentFacilityName)
+            ? $" Şu an {state.CurrentOrdueviName} / {state.CurrentFacilityName} ekranındasınız."
+            : !string.IsNullOrWhiteSpace(state.CurrentOrdueviName)
+                ? $" Şu an {state.CurrentOrdueviName} ekranındasınız."
+                : string.Empty;
+
+        return $"Merhaba, size nasıl yardımcı olabilirim? Randevu alabilir, randevularınızı okuyabilir, telefon ve hizmet/fiyat bilgisi bulabilirim.{context}";
+    }
+
+    private static bool IsGreetingOnly(string normalized)
+    {
+        var text = Regex.Replace(normalized, @"[^\p{L}\p{N}\s]", " ");
+        text = Regex.Replace(text, @"\s+", " ").Trim();
+
+        return text is "merhaba" or "merhabalar" or "selam" or "selamlar" or "slm" or "sa" or
+            "iyi gunler" or "iyi aksamlar" or "gunaydin" or "hayirli gunler";
+    }
+
     private static bool LooksLikeReservationIntent(string normalized)
     {
         return normalized.Contains("randevu") ||
@@ -861,6 +1359,41 @@ public class VoiceController : ControllerBase
                normalized.Contains("berber") ||
                normalized.Contains("kuafor") ||
                normalized.Contains("konaklama");
+    }
+
+    private static bool LooksLikeExplicitReservationAction(string normalized)
+    {
+        return normalized.Contains("randevu") ||
+               normalized.Contains("rezervasyon") ||
+               normalized.Contains("uygun saat") ||
+               normalized.Contains("saat var") ||
+               normalized.Contains("yarin") ||
+               normalized.Contains("bugun") ||
+               Regex.IsMatch(normalized, @"\b\d{1,2}[:.,]\d{2}\b") ||
+               Regex.IsMatch(normalized, @"\b\d{1,2}[./-]\d{1,2}");
+    }
+
+    private static bool LooksLikeFacilityInfoIntent(string normalized)
+    {
+        return normalized.Contains("fiyat") ||
+               normalized.Contains("ucret") ||
+               normalized.Contains("kac para") ||
+               normalized.Contains("hizmet") ||
+               normalized.Contains("imkan") ||
+               normalized.Contains("bilgi") ||
+               normalized.Contains("saatleri") ||
+               normalized.Contains("acilis") ||
+               normalized.Contains("kapanis") ||
+               normalized.Contains("acik mi") ||
+               normalized.Contains("var mi") ||
+               normalized.Contains("menu") ||
+               normalized.Contains("ne var");
+    }
+
+    private static bool LooksLikeReservationCancelIntent(string normalized)
+    {
+        return (normalized.Contains("iptal") || normalized.Contains("sil") || normalized.Contains("vazgec")) &&
+               (normalized.Contains("randevu") || normalized.Contains("rezervasyon"));
     }
 
     private static bool IsPositiveConfirmation(string normalized)
@@ -885,6 +1418,20 @@ public class VoiceController : ControllerBase
         state.PendingStartTime = null;
     }
 
+    private static string RejectPendingReservation(VoiceDialogState state)
+    {
+        ClearPendingReservation(state);
+        return "Tamam, onaylamadım. Başka saat seçebiliriz.";
+    }
+
+    private static void ClearSelectedFacility(VoiceDialogState state)
+    {
+        state.SelectedFacilityId = null;
+        state.SelectedFacilityName = string.Empty;
+        state.SelectedDate = null;
+        state.OfferedSlots.Clear();
+    }
+
     private async Task<string> BuildPhoneFallbackReplyAsync(VoiceSession session, string transcript)
     {
         if (string.IsNullOrWhiteSpace(transcript))
@@ -905,13 +1452,52 @@ public class VoiceController : ControllerBase
         return "Size orduevi bulma, hizmet bilgisi okuma ve randevulu birimler için uygun saat bulma konularında yardımcı olabilirim.";
     }
 
+    private async Task<VoiceRealtimeContext> BuildRealtimeContextAsync(Guid? ordueviId, Guid? facilityId)
+    {
+        var context = new VoiceRealtimeContext();
+
+        if (facilityId.HasValue)
+        {
+            var facility = await _context.Facilities
+                .Include(f => f.Orduevi)
+                .FirstOrDefaultAsync(f => f.Id == facilityId.Value && f.IsActive);
+
+            if (facility != null)
+            {
+                context.FacilityId = facility.Id;
+                context.FacilityName = facility.Name;
+                context.OrdueviId = facility.OrdueviId;
+                context.OrdueviName = facility.Orduevi.Name;
+                return context;
+            }
+        }
+
+        if (ordueviId.HasValue)
+        {
+            var orduevi = await _context.Orduevleri.FirstOrDefaultAsync(o => o.Id == ordueviId.Value);
+            if (orduevi != null)
+            {
+                context.OrdueviId = orduevi.Id;
+                context.OrdueviName = orduevi.Name;
+            }
+        }
+
+        return context;
+    }
+
+    private bool TextAssistantModelEnabled()
+    {
+        var value = _configuration["OPENAI_TEXT_ASSISTANT_ENABLED"];
+        return string.IsNullOrWhiteSpace(value) || bool.TryParse(value, out var enabled) && enabled;
+    }
+
     private bool VoiceAssistantEnabled()
     {
         var value = _configuration["VOICE_ASSISTANT_ENABLED"];
         return string.IsNullOrWhiteSpace(value) || bool.TryParse(value, out var enabled) && enabled;
     }
 
-    private static string BuildRealtimeSessionConfig(string model, string voice, Guid? ordueviId)
+    private static string BuildRealtimeSessionConfig(string model, string voice, VoiceRealtimeContext context)
     {
         var config = new
         {
@@ -919,12 +1505,16 @@ public class VoiceController : ControllerBase
             model,
             instructions = $"""
                 Sen OrduCep sesli asistanısın. Türkçe, sakin, kısa ve yaşlı kullanıcıya uygun konuş.
+                Cevapların pragmatik olsun: genelde bir veya iki kısa cümleyi geçme.
                 Sistem dışı bilgi uydurma; sadece araçlardan gelen veriye dayan.
                 Belirsizlikte en fazla üç seçenek söyle ve netleştirici soru sor.
+                Kullanıcı "bu ekran", "bu sayfa", "şu an açık olan yer" gibi ifadeler kullanırsa mevcut ekran bağlamını kullan.
+                Mevcut ekran orduevi: {(string.IsNullOrWhiteSpace(context.OrdueviName) ? "seçilmedi" : $"{context.OrdueviName} ({context.OrdueviId})")}.
+                Mevcut ekran birimi: {(string.IsNullOrWhiteSpace(context.FacilityName) ? "seçilmedi" : $"{context.FacilityName} ({context.FacilityId})")}.
+                Kullanıcı başka bir yer adı söylerse mevcut bağlamda ısrar etme; orduevi arama aracını kullan.
                 T.C. kimlik numarası gibi hassas bilgileri sesli okuma.
                 Randevu kesinleştirmeden önce mutlaka kullanıcıdan açık onay al.
                 Kullanıcı onaylamadan confirm_reservation aracını çağırma.
-                Geçerli orduevi bağlamı: {(ordueviId?.ToString() ?? "seçilmedi")}.
                 """,
             audio = new { output = new { voice } },
             tools = BuildToolDefinitions(),
@@ -932,6 +1522,92 @@ public class VoiceController : ControllerBase
         };
 
         return JsonSerializer.Serialize(config, JsonOptions);
+    }
+
+    private static string ExtractResponseOutputText(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+
+            if (root.TryGetProperty("output_text", out var outputText) && outputText.ValueKind == JsonValueKind.String)
+                return outputText.GetString() ?? string.Empty;
+
+            if (!root.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.Array)
+                return string.Empty;
+
+            var builder = new StringBuilder();
+            foreach (var item in output.EnumerateArray())
+            {
+                if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (part.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                        builder.Append(text.GetString());
+                }
+            }
+
+            return builder.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string ExtractFirstJsonObject(string text)
+    {
+        var start = text.IndexOf('{');
+        if (start < 0)
+            return string.Empty;
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+
+            if (ch == '\\' && inString)
+            {
+                escaped = true;
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+                continue;
+
+            if (ch == '{')
+                depth++;
+            else if (ch == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return text.Substring(start, i - start + 1);
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
     }
 
     private static object[] BuildToolDefinitions()
@@ -1083,6 +1759,7 @@ public class VoiceToolRequest
     public JsonElement Arguments { get; set; }
     public string UserId { get; set; } = string.Empty;
     public Guid? OrdueviId { get; set; }
+    public Guid? FacilityId { get; set; }
 }
 
 public record VoiceToolResult(bool Success, string Message, object? Data);
@@ -1092,6 +1769,9 @@ public class VoiceTextTurnRequest
     public Guid? SessionId { get; set; }
     public string UserId { get; set; } = string.Empty;
     public Guid? OrdueviId { get; set; }
+    public string? OrdueviName { get; set; }
+    public Guid? FacilityId { get; set; }
+    public string? FacilityName { get; set; }
     public string Message { get; set; } = string.Empty;
 }
 
@@ -1114,6 +1794,10 @@ public class VoicePhoneTurnRequest
 
 public class VoiceDialogState
 {
+    public Guid? CurrentOrdueviId { get; set; }
+    public string CurrentOrdueviName { get; set; } = string.Empty;
+    public Guid? CurrentFacilityId { get; set; }
+    public string CurrentFacilityName { get; set; } = string.Empty;
     public Guid? SelectedOrdueviId { get; set; }
     public string SelectedOrdueviName { get; set; } = string.Empty;
     public Guid? SelectedFacilityId { get; set; }
@@ -1136,4 +1820,22 @@ public class VoiceSearchResult
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
+}
+
+public class VoiceModelDecision
+{
+    public string Action { get; set; } = string.Empty;
+    public string OrdueviQuery { get; set; } = string.Empty;
+    public string FacilityHint { get; set; } = string.Empty;
+    public string Date { get; set; } = string.Empty;
+    public string Time { get; set; } = string.Empty;
+    public int? Choice { get; set; }
+}
+
+public class VoiceRealtimeContext
+{
+    public Guid? OrdueviId { get; set; }
+    public string OrdueviName { get; set; } = string.Empty;
+    public Guid? FacilityId { get; set; }
+    public string FacilityName { get; set; } = string.Empty;
 }
