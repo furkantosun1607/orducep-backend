@@ -27,6 +27,7 @@ public sealed record GooglePlaceDetailsDto(
     int? UserRatingCount,
     string? NationalPhoneNumber,
     string? InternationalPhoneNumber,
+    GoogleMapsLinksDto? GoogleMapsLinks,
     IReadOnlyList<GooglePlacePhotoDto> Photos,
     IReadOnlyList<GooglePlaceReviewDto> Reviews,
     IReadOnlyList<GoogleAttributionDto> Attributions,
@@ -53,6 +54,33 @@ public sealed record GoogleAttributionDto(
     string? Uri,
     string? PhotoUri);
 
+public sealed record GoogleMapsLinksDto(
+    string? DirectionsUri,
+    string? PlaceUri,
+    string? WriteAReviewUri,
+    string? ReviewsUri,
+    string? PhotosUri);
+
+public sealed class GooglePlacesApiException : Exception
+{
+    public GooglePlacesApiException(HttpStatusCode statusCode, string operation, string responseBody)
+        : base(BuildMessage(statusCode, operation))
+    {
+        StatusCode = statusCode;
+        Operation = operation;
+        ResponseBody = responseBody;
+    }
+
+    public HttpStatusCode StatusCode { get; }
+
+    public string Operation { get; }
+
+    public string ResponseBody { get; }
+
+    private static string BuildMessage(HttpStatusCode statusCode, string operation) =>
+        $"Google Places {operation} isteği başarısız oldu ({(int)statusCode}). Places API (New), faturalandırma ve API anahtarı kısıtlarını kontrol edin.";
+}
+
 public sealed class GooglePlacesService : IGooglePlacesService
 {
     private const string PlacesBaseUrl = "https://places.googleapis.com/v1";
@@ -73,10 +101,12 @@ public sealed class GooglePlacesService : IGooglePlacesService
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey);
 
-    private string ApiKey =>
-        _configuration["GoogleMaps:ApiKey"]
-        ?? Environment.GetEnvironmentVariable("GOOGLE_MAPS_API_KEY")
-        ?? string.Empty;
+    private string ApiKey => FirstNonBlank(
+        _configuration["GoogleMaps:ApiKey"],
+        _configuration["GOOGLE_MAPS_API_KEY"],
+        Environment.GetEnvironmentVariable("GOOGLE_MAPS_API_KEY"),
+        Environment.GetEnvironmentVariable("GoogleMaps__ApiKey"),
+        Environment.GetEnvironmentVariable("GoogleMaps:ApiKey")) ?? string.Empty;
 
     private string LanguageCode => _configuration["GoogleMaps:LanguageCode"] ?? "tr";
 
@@ -110,8 +140,8 @@ public sealed class GooglePlacesService : IGooglePlacesService
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            await LogGoogleErrorAsync(response, "Text Search", cancellationToken);
-            return null;
+            var body = await LogGoogleErrorAsync(response, "Text Search", cancellationToken);
+            throw new GooglePlacesApiException(response.StatusCode, "Text Search", body);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -137,7 +167,7 @@ public sealed class GooglePlacesService : IGooglePlacesService
         request.Headers.Add("X-Goog-Api-Key", ApiKey);
         request.Headers.Add(
             "X-Goog-FieldMask",
-            "id,displayName,formattedAddress,googleMapsUri,rating,userRatingCount,nationalPhoneNumber,internationalPhoneNumber,photos,reviews,attributions");
+            "id,displayName,formattedAddress,googleMapsUri,googleMapsLinks,rating,userRatingCount,nationalPhoneNumber,internationalPhoneNumber,photos,reviews,attributions");
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound)
@@ -145,8 +175,8 @@ public sealed class GooglePlacesService : IGooglePlacesService
 
         if (!response.IsSuccessStatusCode)
         {
-            await LogGoogleErrorAsync(response, "Place Details", cancellationToken);
-            return null;
+            var body = await LogGoogleErrorAsync(response, "Place Details", cancellationToken);
+            throw new GooglePlacesApiException(response.StatusCode, "Place Details", body);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -164,6 +194,7 @@ public sealed class GooglePlacesService : IGooglePlacesService
             UserRatingCount: ReadNullableInt(root, "userRatingCount"),
             NationalPhoneNumber: ReadOptionalString(root, "nationalPhoneNumber"),
             InternationalPhoneNumber: ReadOptionalString(root, "internationalPhoneNumber"),
+            GoogleMapsLinks: ReadGoogleMapsLinks(root),
             Photos: photos,
             Reviews: ReadReviews(root),
             Attributions: ReadAttributions(root, "attributions"),
@@ -254,6 +285,19 @@ public sealed class GooglePlacesService : IGooglePlacesService
             .ToList();
     }
 
+    private static GoogleMapsLinksDto? ReadGoogleMapsLinks(JsonElement root)
+    {
+        if (!root.TryGetProperty("googleMapsLinks", out var links) || links.ValueKind != JsonValueKind.Object)
+            return null;
+
+        return new GoogleMapsLinksDto(
+            DirectionsUri: ReadOptionalString(links, "directionsUri"),
+            PlaceUri: ReadOptionalString(links, "placeUri"),
+            WriteAReviewUri: ReadOptionalString(links, "writeAReviewUri"),
+            ReviewsUri: ReadOptionalString(links, "reviewsUri"),
+            PhotosUri: ReadOptionalString(links, "photosUri"));
+    }
+
     private string BuildSearchQuery(Orduevi orduevi)
     {
         var parts = new[] { orduevi.Name, orduevi.Address, "Türkiye" }
@@ -272,13 +316,16 @@ public sealed class GooglePlacesService : IGooglePlacesService
         return Math.Clamp(value, min, max);
     }
 
+    private static string? FirstNonBlank(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+
     private void EnsureConfigured()
     {
         if (!IsConfigured)
             throw new InvalidOperationException("Google Maps API anahtarı tanımlı değil. GOOGLE_MAPS_API_KEY veya GoogleMaps:ApiKey kullanın.");
     }
 
-    private async Task LogGoogleErrorAsync(HttpResponseMessage response, string operation, CancellationToken cancellationToken)
+    private async Task<string> LogGoogleErrorAsync(HttpResponseMessage response, string operation, CancellationToken cancellationToken)
     {
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         _logger.LogWarning(
@@ -286,6 +333,7 @@ public sealed class GooglePlacesService : IGooglePlacesService
             operation,
             (int)response.StatusCode,
             body);
+        return body;
     }
 
     private static string ReadLocalizedText(JsonElement root, string propertyName)

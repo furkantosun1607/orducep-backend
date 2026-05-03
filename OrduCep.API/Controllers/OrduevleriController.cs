@@ -110,7 +110,13 @@ public class OrduevleriController : ControllerBase
             if (string.IsNullOrWhiteSpace(placeId))
             {
                 var match = await _googlePlaces.FindPlaceIdAsync(orduevi, HttpContext.RequestAborted);
-                placeId = match?.PlaceId;
+                if (match != null)
+                {
+                    placeId = match.PlaceId;
+                    orduevi.ScrapedMetadataJson = WriteGooglePlaceId(orduevi.ScrapedMetadataJson, match);
+                    orduevi.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync(HttpContext.RequestAborted);
+                }
             }
 
             if (string.IsNullOrWhiteSpace(placeId))
@@ -124,6 +130,10 @@ public class OrduevleriController : ControllerBase
         catch (InvalidOperationException ex) when (!_googlePlaces.IsConfigured)
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
+        }
+        catch (GooglePlacesApiException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { ex.Message });
         }
     }
 
@@ -170,11 +180,18 @@ public class OrduevleriController : ControllerBase
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
         }
+        catch (GooglePlacesApiException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { ex.Message });
+        }
     }
 
     [HttpPost("google-maps/sync-place-ids")]
     [Authorize(Roles = "Admin")]
-    public async Task<IActionResult> SyncGooglePlaceIds([FromQuery] bool force = false, [FromQuery] int limit = 0)
+    public async Task<IActionResult> SyncGooglePlaceIds(
+        [FromQuery] bool force = false,
+        [FromQuery] int limit = 0,
+        [FromQuery] bool verifyDetails = false)
     {
         try
         {
@@ -188,6 +205,8 @@ public class OrduevleriController : ControllerBase
             var matched = 0;
             var skipped = 0;
             var notFound = 0;
+            var withPhotos = 0;
+            var withReviews = 0;
 
             foreach (var orduevi in orduevleri)
             {
@@ -195,12 +214,19 @@ public class OrduevleriController : ControllerBase
                 if (!force && !string.IsNullOrWhiteSpace(existingPlaceId))
                 {
                     skipped++;
+                    var detailSummary = verifyDetails
+                        ? await ReadGoogleDetailSummaryAsync(existingPlaceId, HttpContext.RequestAborted)
+                        : null;
+                    if (detailSummary?.PhotoCount > 0) withPhotos++;
+                    if (detailSummary?.ReviewCount > 0) withReviews++;
+
                     results.Add(new
                     {
                         orduevi.Id,
                         orduevi.Name,
                         status = "skipped",
-                        placeId = existingPlaceId
+                        placeId = existingPlaceId,
+                        detailSummary
                     });
                     continue;
                 }
@@ -217,12 +243,19 @@ public class OrduevleriController : ControllerBase
                 orduevi.UpdatedAt = DateTime.UtcNow;
                 matched++;
 
+                var matchedDetailSummary = verifyDetails
+                    ? await ReadGoogleDetailSummaryAsync(match.PlaceId, HttpContext.RequestAborted)
+                    : null;
+                if (matchedDetailSummary?.PhotoCount > 0) withPhotos++;
+                if (matchedDetailSummary?.ReviewCount > 0) withReviews++;
+
                 results.Add(new
                 {
                     orduevi.Id,
                     orduevi.Name,
                     status = "matched",
-                    placeId = match.PlaceId
+                    placeId = match.PlaceId,
+                    detailSummary = matchedDetailSummary
                 });
             }
 
@@ -235,6 +268,9 @@ public class OrduevleriController : ControllerBase
                 matched,
                 skipped,
                 notFound,
+                withPhotos,
+                withReviews,
+                verifiedDetails = verifyDetails,
                 results
             });
         }
@@ -242,6 +278,53 @@ public class OrduevleriController : ControllerBase
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
         }
+        catch (GooglePlacesApiException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { ex.Message });
+        }
+    }
+
+    [HttpGet("google-maps/sync-status")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> GetGoogleMapsSyncStatus()
+    {
+        var rows = await _context.Orduevleri
+            .OrderBy(o => o.Name)
+            .Select(o => new
+            {
+                o.Id,
+                o.Name,
+                o.ScrapedMetadataJson
+            })
+            .ToListAsync();
+
+        var items = rows.Select(o =>
+        {
+            var placeId = ReadGooglePlaceId(o.ScrapedMetadataJson);
+            return new
+            {
+                o.Id,
+                o.Name,
+                HasPlaceId = !string.IsNullOrWhiteSpace(placeId),
+                PlaceId = placeId
+            };
+        }).ToList();
+
+        return Ok(new
+        {
+            Total = items.Count,
+            WithPlaceId = items.Count(i => i.HasPlaceId),
+            MissingPlaceId = items.Count(i => !i.HasPlaceId),
+            Items = items
+        });
+    }
+
+    private async Task<GoogleDetailSummary?> ReadGoogleDetailSummaryAsync(string placeId, CancellationToken cancellationToken)
+    {
+        var details = await _googlePlaces.GetPlaceDetailsAsync(placeId, cancellationToken);
+        return details == null
+            ? null
+            : new GoogleDetailSummary(details.Photos.Count, details.Reviews.Count, details.Rating, details.UserRatingCount);
     }
 
     [HttpPost]
@@ -548,6 +631,12 @@ public class OrduevleriController : ControllerBase
         return NoContent();
     }
 }
+
+public sealed record GoogleDetailSummary(
+    int PhotoCount,
+    int ReviewCount,
+    double? Rating,
+    int? UserRatingCount);
 
 public class CreateOrdueviRequest
 {
