@@ -1,5 +1,7 @@
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
+using OrduCep.API.Auth;
 using OrduCep.API.Services;
 using OrduCep.Infrastructure.Persistence;
 using OrduCep.API;
@@ -15,13 +17,23 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddInfrastructure(builder.Configuration); // Gerçek veritabanı (MySQL)
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient<IGooglePlacesService, GooglePlacesService>();
+builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+builder.Services
+    .AddAuthentication(AuthSchemes.Bearer)
+    .AddScheme<AuthenticationSchemeOptions, SimpleJwtAuthenticationHandler>(AuthSchemes.Bearer, _ => { });
+builder.Services.AddAuthorization();
 
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll",
-        builder => builder.AllowAnyOrigin()
-                          .AllowAnyMethod()
-                          .AllowAnyHeader());
+    var allowedOrigins = (Environment.GetEnvironmentVariable("ALLOWED_ORIGINS") ??
+                          builder.Configuration["ALLOWED_ORIGINS"] ??
+                          "http://localhost:4200,http://localhost:4201,http://localhost:4202")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    options.AddPolicy("FrontendOnly",
+        policy => policy.WithOrigins(allowedOrigins)
+                        .AllowAnyMethod()
+                        .AllowAnyHeader());
 });
 
 var app = builder.Build();
@@ -48,7 +60,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseCors("AllowAll");
+app.UseCors("FrontendOnly");
 
 var scrapedImagesPath = FindDirectoryInParentTree(Path.Combine("scraped_data", "images"));
 if (!string.IsNullOrWhiteSpace(scrapedImagesPath))
@@ -61,6 +73,7 @@ if (!string.IsNullOrWhiteSpace(scrapedImagesPath))
 }
 
 app.UseHttpsRedirection();
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.Run();

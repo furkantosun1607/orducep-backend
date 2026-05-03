@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrduCep.API.Services;
@@ -10,6 +11,7 @@ using System.Text.Json.Nodes;
 namespace OrduCep.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class OrduevleriController : ControllerBase
 {
@@ -126,6 +128,7 @@ public class OrduevleriController : ControllerBase
     }
 
     [HttpPost("{id:guid}/google-maps/sync-place-id")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> SyncGooglePlaceId(Guid id, [FromQuery] bool force = false)
     {
         var orduevi = await _context.Orduevleri.FirstOrDefaultAsync(o => o.Id == id);
@@ -170,6 +173,7 @@ public class OrduevleriController : ControllerBase
     }
 
     [HttpPost("google-maps/sync-place-ids")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> SyncGooglePlaceIds([FromQuery] bool force = false, [FromQuery] int limit = 0)
     {
         try
@@ -241,6 +245,7 @@ public class OrduevleriController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Create([FromBody] CreateOrdueviRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Address))
@@ -292,6 +297,7 @@ public class OrduevleriController : ControllerBase
     /// Mevcut bir orduevinin bilgilerini günceller (Admin).
     /// </summary>
     [HttpPut("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateOrdueviRequest request)
     {
         var orduevi = await _context.Orduevleri.FirstOrDefaultAsync(o => o.Id == id);
@@ -357,6 +363,7 @@ public class OrduevleriController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id)
     {
         var orduevi = await _context.Orduevleri
@@ -439,6 +446,7 @@ public class OrduevleriController : ControllerBase
 
     // 3. Bir orduevine yeni facility eklenmesi
     [HttpPost("{ordueviId:guid}/facilities")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> CreateFacility(Guid ordueviId, [FromBody] CreateOrdueviFacilityRequest request)
     {
         var ordueviExists = await _context.Orduevleri.AnyAsync(o => o.Id == ordueviId);
@@ -467,6 +475,7 @@ public class OrduevleriController : ControllerBase
 
     // 4. Bir orduevinin facilitysinin silinmesi
     [HttpDelete("{ordueviId:guid}/facilities/{facilityId:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> DeleteFacility(Guid ordueviId, Guid facilityId)
     {
         var facility = await _context.Facilities.FirstOrDefaultAsync(f => f.OrdueviId == ordueviId && f.Id == facilityId);
@@ -500,6 +509,7 @@ public class OrduevleriController : ControllerBase
 
     // 7. FacilityService ekleme endpointi
     [HttpPost("{ordueviId:guid}/facilities/{facilityId:guid}/services")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> CreateFacilityService(Guid ordueviId, Guid facilityId, [FromBody] CreateFacilityServiceRequest request)
     {
         var facilityExists = await _context.Facilities.AnyAsync(f => f.OrdueviId == ordueviId && f.Id == facilityId);
@@ -523,6 +533,7 @@ public class OrduevleriController : ControllerBase
 
     // 8. FacilityService silme endpointi
     [HttpDelete("{ordueviId:guid}/facilities/{facilityId:guid}/services/{serviceId:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> DeleteFacilityService(Guid ordueviId, Guid facilityId, Guid serviceId)
     {
         var facilityExists = await _context.Facilities.AnyAsync(f => f.OrdueviId == ordueviId && f.Id == facilityId);

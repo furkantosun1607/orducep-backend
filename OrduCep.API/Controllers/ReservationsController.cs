@@ -1,5 +1,4 @@
-using System.Security.Cryptography;
-using System.Text;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrduCep.API;
@@ -7,10 +6,12 @@ using OrduCep.Application.Interfaces;
 using OrduCep.Application.Services;
 using OrduCep.Domain.Entities;
 using OrduCep.Domain.Enums;
+using System.Security.Claims;
 
 namespace OrduCep.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class ReservationsController : ControllerBase
 {
@@ -54,7 +55,11 @@ public class ReservationsController : ControllerBase
         [FromBody] LockRequest request,
         [FromServices] IApplicationDbContext context)
     {
-        var access = await EnsureReservableUserAsync(request.UserId, context);
+        var userId = CurrentUserId();
+        if (string.IsNullOrWhiteSpace(userId))
+            return Unauthorized(new { Message = "Giriş bilgisi bulunamadı." });
+
+        var access = await EnsureReservableUserAsync(userId, context);
         if (!access.Allowed)
             return StatusCode(access.StatusCode, new { Message = access.Message });
 
@@ -63,7 +68,7 @@ public class ReservationsController : ControllerBase
             request.StartTime,
             request.ServiceId,
             request.ResourceId,
-            request.UserId,
+            userId,
             request.GuestCount);
 
         if (success)
@@ -80,11 +85,15 @@ public class ReservationsController : ControllerBase
         [FromBody] ConfirmRequest request,
         [FromServices] IApplicationDbContext context)
     {
-        var access = await EnsureReservableUserAsync(request.UserId, context);
+        var userId = CurrentUserId();
+        if (string.IsNullOrWhiteSpace(userId))
+            return Unauthorized(new { Message = "Giriş bilgisi bulunamadı." });
+
+        var access = await EnsureReservableUserAsync(userId, context);
         if (!access.Allowed)
             return StatusCode(access.StatusCode, new { Message = access.Message });
 
-        var success = await _reservationService.ConfirmReservationAsync(request.FacilityId, request.StartTime, request.UserId);
+        var success = await _reservationService.ConfirmReservationAsync(request.FacilityId, request.StartTime, userId);
 
         if (success)
             return Ok(new { Message = "Randevunuz başarıyla oluşturuldu." });
@@ -100,10 +109,11 @@ public class ReservationsController : ControllerBase
     /// Kullanıcının kendi geçmiş ve gelecek randevularını getirir.
     /// </summary>
     [HttpGet("my-reservations")]
-    public async Task<IActionResult> GetMyReservations([FromQuery] string userId)
+    public async Task<IActionResult> GetMyReservations()
     {
+        var userId = CurrentUserId();
         if (string.IsNullOrWhiteSpace(userId))
-            return BadRequest(new { Message = "Kullanıcı ID (userId) zorunludur." });
+            return Unauthorized(new { Message = "Giriş bilgisi bulunamadı." });
 
         var reservations = await _reservationService.GetUserReservationsAsync(userId);
         return Ok(reservations);
@@ -113,10 +123,11 @@ public class ReservationsController : ControllerBase
     /// Kullanıcının randevusunu iptal etmesini sağlar.
     /// </summary>
     [HttpPut("cancel/{id:guid}")]
-    public async Task<IActionResult> CancelReservation(Guid id, [FromQuery] string userId)
+    public async Task<IActionResult> CancelReservation(Guid id)
     {
+        var userId = CurrentUserId();
         if (string.IsNullOrWhiteSpace(userId))
-            return BadRequest(new { Message = "Kullanıcı ID (userId) zorunludur." });
+            return Unauthorized(new { Message = "Giriş bilgisi bulunamadı." });
 
         var success = await _reservationService.CancelReservationAsync(id, userId);
 
@@ -136,16 +147,18 @@ public class ReservationsController : ControllerBase
         [FromQuery] DateTime? endDate,
         [FromQuery] Guid? resourceId,
         [FromQuery] bool includeCancelled,
-        [FromQuery] bool isSuperAdmin,
-        [FromQuery] string? userId,
         [FromServices] IApplicationDbContext context)
     {
+        var userId = CurrentUserId();
+        if (string.IsNullOrWhiteSpace(userId))
+            return Unauthorized(new { Message = "Giriş bilgisi bulunamadı." });
+
         var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
         if (!facilityExists)
             return NotFound(new { Message = "Tesis bulunamadı." });
 
-        var isFacilityStaff = !string.IsNullOrWhiteSpace(userId) &&
-            await context.FacilityStaffs.AnyAsync(s => s.FacilityId == facilityId && s.UserId == userId);
+        var isSuperAdmin = IsAdmin();
+        var isFacilityStaff = await context.FacilityStaffs.AnyAsync(s => s.FacilityId == facilityId && s.UserId == userId);
 
         if (!isSuperAdmin && !isFacilityStaff)
             return StatusCode(403, new { Message = "Bu tesisin randevularını görme yetkiniz yok." });
@@ -206,13 +219,13 @@ public class ReservationsController : ControllerBase
                 Status = r.Status.ToString(),
                 r.GuestCount,
                 r.Note,
-                UserId = r.UserId,
+                UserId = MaskIdentifier(r.UserId),
                 CustomerName = user != null ? BuildFullName(user.FirstName, user.LastName) : "Bilinmeyen kullanıcı",
-                CustomerIdentityNumber = user?.IdentityNumber ?? string.Empty,
-                CustomerPhoneNumber = user?.PhoneNumber ?? string.Empty,
+                CustomerIdentityNumber = MaskIdentity(user?.IdentityNumber),
+                CustomerPhoneNumber = MaskPhone(user?.PhoneNumber),
                 Relation = user?.Relation ?? string.Empty,
                 OwnerName = ownerName,
-                OwnerIdentityNumber = user?.OwnerTcNo ?? string.Empty,
+                OwnerIdentityNumber = MaskIdentity(user?.OwnerTcNo),
                 OwnerRank = user?.OwnerRank ?? string.Empty,
                 CanCancel = r.Status != ReservationStatus.Cancelled && !IsPastOrCurrentBusinessTime(r.StartTime)
             };
@@ -232,6 +245,9 @@ public class ReservationsController : ControllerBase
         [FromServices] IApplicationDbContext context)
     {
         request ??= new ManagerCancelReservationRequest();
+        var userId = CurrentUserId();
+        if (string.IsNullOrWhiteSpace(userId))
+            return Unauthorized(new { Message = "Giriş bilgisi bulunamadı." });
 
         var reservation = await context.Reservations
             .FirstOrDefaultAsync(r => r.Id == reservationId && r.FacilityId == facilityId);
@@ -239,21 +255,10 @@ public class ReservationsController : ControllerBase
         if (reservation == null)
             return NotFound(new { Message = "Randevu bulunamadı." });
 
-        var isResourceOwner = false;
-        if (request.ResourceId.HasValue && reservation.ResourceId == request.ResourceId.Value)
-        {
-            isResourceOwner = await context.Resources
-                .AnyAsync(r => r.Id == request.ResourceId.Value && r.FacilityId == facilityId && r.IsActive);
-        }
+        var isFacilityStaff = await context.FacilityStaffs
+            .AnyAsync(s => s.FacilityId == facilityId && s.UserId == userId);
 
-        var isFacilityStaff = false;
-        if (!string.IsNullOrWhiteSpace(request.UserId))
-        {
-            isFacilityStaff = await context.FacilityStaffs
-                .AnyAsync(s => s.FacilityId == facilityId && s.UserId == request.UserId);
-        }
-
-        if (!request.IsSuperAdmin && !isResourceOwner && !isFacilityStaff)
+        if (!IsAdmin() && !isFacilityStaff)
             return StatusCode(403, new { Message = "Bu randevuyu iptal etme yetkiniz yok." });
 
         if (IsPastOrCurrentBusinessTime(reservation.StartTime))
@@ -306,10 +311,51 @@ public class ReservationsController : ControllerBase
         return string.Join(" ", parts.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()));
     }
 
-    private static string HashPassword(string password)
+    private string? CurrentUserId()
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
-        return Convert.ToHexString(bytes);
+        return User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
+    }
+
+    private bool IsAdmin()
+    {
+        return User.IsInRole("Admin");
+    }
+
+    private async Task<bool> CanManageFacilityAsync(Guid facilityId, IApplicationDbContext context)
+    {
+        if (IsAdmin())
+            return true;
+
+        var userId = CurrentUserId();
+        return !string.IsNullOrWhiteSpace(userId) &&
+               await context.FacilityStaffs.AnyAsync(s => s.FacilityId == facilityId && s.UserId == userId);
+    }
+
+    private static string MaskIdentity(string? value)
+    {
+        var digits = new string((value ?? string.Empty).Where(char.IsDigit).ToArray());
+        return digits.Length == 11
+            ? $"{digits[..3]}******{digits[^2..]}"
+            : string.Empty;
+    }
+
+    private static string MaskPhone(string? value)
+    {
+        var digits = new string((value ?? string.Empty).Where(char.IsDigit).ToArray());
+        if (digits.Length < 4)
+            return string.Empty;
+
+        return $"*** *** {digits[^4..]}";
+    }
+
+    private static string MaskIdentifier(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return value.Length <= 8
+            ? "***"
+            : $"{value[..4]}***{value[^4..]}";
     }
 
     private static async Task<(bool Allowed, int StatusCode, string Message)> EnsureReservableUserAsync(
@@ -386,6 +432,9 @@ public class ReservationsController : ControllerBase
     [HttpPost("facilities")]
     public async Task<IActionResult> CreateFacility([FromBody] CreateFacilityRequest request, [FromServices] IApplicationDbContext context)
     {
+        if (!IsAdmin())
+            return StatusCode(403, new { Message = "Bu işlem için admin yetkisi gerekir." });
+
         if (request.OrdueviId == Guid.Empty || string.IsNullOrWhiteSpace(request.Name))
             return BadRequest(new { Message = "Orduevi ve tesis adı zorunludur." });
 
@@ -445,6 +494,9 @@ public class ReservationsController : ControllerBase
     [HttpDelete("facilities/{facilityId:guid}")]
     public async Task<IActionResult> DeleteFacility(Guid facilityId, [FromServices] IApplicationDbContext context)
     {
+        if (!IsAdmin())
+            return StatusCode(403, new { Message = "Bu işlem için admin yetkisi gerekir." });
+
         var facility = await context.Facilities.FirstOrDefaultAsync(f => f.Id == facilityId);
         if (facility == null)
             return NotFound(new { Message = "Tesis bulunamadı." });
@@ -465,6 +517,9 @@ public class ReservationsController : ControllerBase
         [FromBody] UpdateFacilityRequestDto request,
         [FromServices] IApplicationDbContext context)
     {
+        if (!await CanManageFacilityAsync(id, context))
+            return StatusCode(403, new { Message = "Bu tesisi düzenleme yetkiniz yok." });
+
         var facility = await context.Facilities
             .Include(f => f.Services)
             .Include(f => f.StaffMembers)
@@ -569,6 +624,9 @@ public class ReservationsController : ControllerBase
         // ── Personel: tam değiştirme (replace-all) ──
         if (request.Staff != null)
         {
+            if (!IsAdmin())
+                return StatusCode(403, new { Message = "Personel atamasını yalnızca admin değiştirebilir." });
+
             // Eski personelleri sil
             context.FacilityStaffs.RemoveRange(facility.StaffMembers);
 
@@ -654,6 +712,9 @@ public class ReservationsController : ControllerBase
     [HttpPost("facilities/{facilityId:guid}/resources")]
     public async Task<IActionResult> CreateResource(Guid facilityId, [FromBody] CreateResourceRequest request, [FromServices] IApplicationDbContext context)
     {
+        if (!await CanManageFacilityAsync(facilityId, context))
+            return StatusCode(403, new { Message = "Bu tesise kaynak ekleme yetkiniz yok." });
+
         var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
         if (!facilityExists)
             return NotFound(new { Message = "Tesis bulunamadı." });
@@ -694,6 +755,9 @@ public class ReservationsController : ControllerBase
     [HttpDelete("facilities/{facilityId:guid}/resources/{resourceId:guid}")]
     public async Task<IActionResult> DeleteResource(Guid facilityId, Guid resourceId, [FromServices] IApplicationDbContext context)
     {
+        if (!await CanManageFacilityAsync(facilityId, context))
+            return StatusCode(403, new { Message = "Bu tesisten kaynak silme yetkiniz yok." });
+
         var resource = await context.Resources
             .FirstOrDefaultAsync(r => r.Id == resourceId && r.FacilityId == facilityId);
 
@@ -720,6 +784,9 @@ public class ReservationsController : ControllerBase
         if (!facilityExists)
             return NotFound(new { Message = "Tesis bulunamadı." });
 
+        if (!await CanManageFacilityAsync(facilityId, context))
+            return StatusCode(403, new { Message = "Bu tesisin personel listesini görme yetkiniz yok." });
+
         var staff = await context.FacilityStaffs
             .Where(s => s.FacilityId == facilityId)
             .OrderBy(s => s.Name)
@@ -728,7 +795,7 @@ public class ReservationsController : ControllerBase
         var userIds = staff
             .Select(s => s.UserId)
             .Where(id => Guid.TryParse(id, out _))
-            .Select(Guid.Parse)
+            .Select(id => Guid.Parse(id!))
             .Distinct()
             .ToList();
 
@@ -749,8 +816,8 @@ public class ReservationsController : ControllerBase
                 s.UserId,
                 s.Name,
                 Role = PersonnelAccessRules.DisplayStaffRole(user?.OwnerRank, s.Role),
-                IdentityNumber = user?.IdentityNumber ?? string.Empty,
-                PhoneNumber = user?.PhoneNumber ?? string.Empty,
+                IdentityNumber = MaskIdentity(user?.IdentityNumber),
+                PhoneNumber = MaskPhone(user?.PhoneNumber),
                 Rank = user?.OwnerRank ?? string.Empty
             };
         }));
@@ -763,6 +830,8 @@ public class ReservationsController : ControllerBase
     public async Task<IActionResult> AddFacilityStaff(Guid facilityId, [FromBody] AddFacilityStaffRequest request, [FromServices] IApplicationDbContext context)
     {
         request ??= new AddFacilityStaffRequest();
+        if (!IsAdmin())
+            return StatusCode(403, new { Message = "Sorumlu personel atamasını yalnızca admin yapabilir." });
 
         var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
         if (!facilityExists)
@@ -795,7 +864,7 @@ public class ReservationsController : ControllerBase
             {
                 Id = Guid.NewGuid(),
                 IdentityNumber = identityNumber,
-                PasswordHash = HashPassword(identityNumber),
+                PasswordHash = PasswordHashing.Hash(identityNumber),
                 FirstName = firstName,
                 LastName = lastName,
                 PhoneNumber = phoneNumber,
@@ -855,8 +924,8 @@ public class ReservationsController : ControllerBase
             existing.UserId,
             existing.Name,
             Role = PersonnelAccessRules.DisplayStaffRole(user.OwnerRank, existing.Role),
-            user.IdentityNumber,
-            user.PhoneNumber,
+            IdentityNumber = MaskIdentity(user.IdentityNumber),
+            PhoneNumber = MaskPhone(user.PhoneNumber),
             Rank = user.OwnerRank,
             Message = "Sorumlu personel eklendi."
         });
@@ -868,6 +937,9 @@ public class ReservationsController : ControllerBase
     [HttpDelete("facilities/{facilityId:guid}/staff/{staffId:guid}")]
     public async Task<IActionResult> DeleteFacilityStaff(Guid facilityId, Guid staffId, [FromServices] IApplicationDbContext context)
     {
+        if (!IsAdmin())
+            return StatusCode(403, new { Message = "Sorumlu personel atamasını yalnızca admin kaldırabilir." });
+
         var staff = await context.FacilityStaffs
             .FirstOrDefaultAsync(s => s.Id == staffId && s.FacilityId == facilityId);
 
@@ -911,6 +983,9 @@ public class ReservationsController : ControllerBase
     [HttpPost("facilities/{facilityId:guid}/services")]
     public async Task<IActionResult> CreateService(Guid facilityId, [FromBody] CreateServiceRequest request, [FromServices] IApplicationDbContext context)
     {
+        if (!await CanManageFacilityAsync(facilityId, context))
+            return StatusCode(403, new { Message = "Bu tesise hizmet ekleme yetkiniz yok." });
+
         var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
         if (!facilityExists)
             return NotFound(new { Message = "Tesis bulunamadı." });
@@ -948,6 +1023,9 @@ public class ReservationsController : ControllerBase
     [HttpDelete("facilities/{facilityId:guid}/services/{serviceId:guid}")]
     public async Task<IActionResult> DeleteService(Guid facilityId, Guid serviceId, [FromServices] IApplicationDbContext context)
     {
+        if (!await CanManageFacilityAsync(facilityId, context))
+            return StatusCode(403, new { Message = "Bu tesisten hizmet silme yetkiniz yok." });
+
         var service = await context.FacilityServices
             .FirstOrDefaultAsync(s => s.Id == serviceId && s.FacilityId == facilityId);
 
@@ -970,6 +1048,9 @@ public class ReservationsController : ControllerBase
         [FromBody] EditServiceRequest request,
         [FromServices] IApplicationDbContext context)
     {
+        if (!await CanManageFacilityAsync(facilityId, context))
+            return StatusCode(403, new { Message = "Bu tesisin hizmetlerini düzenleme yetkiniz yok." });
+
         var service = await context.FacilityServices
             .FirstOrDefaultAsync(s => s.Id == serviceId && s.FacilityId == facilityId);
 
@@ -1010,6 +1091,9 @@ public class ReservationsController : ControllerBase
         [FromBody] AddServicesRequest request,
         [FromServices] IApplicationDbContext context)
     {
+        if (!await CanManageFacilityAsync(facilityId, context))
+            return StatusCode(403, new { Message = "Bu tesise hizmet ekleme yetkiniz yok." });
+
         var facilityExists = await context.Facilities.AnyAsync(f => f.Id == facilityId);
         if (!facilityExists)
             return NotFound(new { Message = "Tesis bulunamadı." });

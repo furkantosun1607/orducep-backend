@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrduCep.Application.Interfaces;
@@ -11,6 +13,7 @@ using OrduCep.Domain.Enums;
 namespace OrduCep.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/voice")]
 public class VoiceController : ControllerBase
 {
@@ -34,7 +37,7 @@ public class VoiceController : ControllerBase
 
     [HttpPost("realtime/call")]
     [Consumes("application/sdp", "text/plain")]
-    public async Task<IActionResult> CreateRealtimeCall([FromQuery] string userId, [FromQuery] Guid? ordueviId, [FromQuery] Guid? facilityId)
+    public async Task<IActionResult> CreateRealtimeCall([FromQuery] Guid? ordueviId, [FromQuery] Guid? facilityId)
     {
         if (!VoiceAssistantEnabled())
             return StatusCode(503, new { Message = "Sesli asistan şu anda kapalı." });
@@ -43,7 +46,7 @@ public class VoiceController : ControllerBase
         if (string.IsNullOrWhiteSpace(apiKey))
             return StatusCode(503, new { Message = "OPENAI_API_KEY tanımlı olmadığı için sesli asistan başlatılamıyor." });
 
-        var user = await FindUserAsync(userId);
+        var user = await GetCurrentUserAsync();
         if (user == null)
             return NotFound(new { Message = "Kullanıcı bulunamadı." });
 
@@ -82,6 +85,12 @@ public class VoiceController : ControllerBase
     [HttpPost("tools/execute")]
     public async Task<IActionResult> ExecuteTool([FromBody] VoiceToolRequest request)
     {
+        var user = await GetCurrentUserAsync();
+        if (user == null)
+            return NotFound(new { Message = "Kullanıcı bulunamadı." });
+
+        var userId = user.Id.ToString();
+
         if (string.IsNullOrWhiteSpace(request.ToolName))
             return BadRequest(new { Message = "Araç adı zorunludur." });
 
@@ -94,10 +103,10 @@ public class VoiceController : ControllerBase
                 "search_orduevis" => await SearchOrduevisAsync(request.Arguments),
                 "list_facilities" => await ListFacilitiesAsync(request.Arguments, request.OrdueviId),
                 "get_facility_info" => await GetFacilityInfoAsync(request.Arguments, request.FacilityId),
-                "find_slots" => await WithReservableUserAsync(request.UserId, () => FindSlotsAsync(request.Arguments, request.FacilityId)),
-                "lock_reservation" => await WithReservableUserAsync(request.UserId, () => LockReservationAsync(request.Arguments, request.UserId, request.FacilityId)),
-                "confirm_reservation" => await WithReservableUserAsync(request.UserId, () => ConfirmReservationAsync(request.Arguments, request.UserId, request.FacilityId)),
-                "list_my_reservations" => await WithKnownUserAsync(request.UserId, () => ListMyReservationsAsync(request.UserId)),
+                "find_slots" => await WithReservableUserAsync(userId, () => FindSlotsAsync(request.Arguments, request.FacilityId)),
+                "lock_reservation" => await WithReservableUserAsync(userId, () => LockReservationAsync(request.Arguments, userId, request.FacilityId)),
+                "confirm_reservation" => await WithReservableUserAsync(userId, () => ConfirmReservationAsync(request.Arguments, userId, request.FacilityId)),
+                "list_my_reservations" => await WithKnownUserAsync(userId, () => ListMyReservationsAsync(userId)),
                 _ => new VoiceToolResult(false, $"Bilinmeyen araç: {request.ToolName}", null)
             };
 
@@ -112,7 +121,7 @@ public class VoiceController : ControllerBase
     [HttpPost("phone/session")]
     public async Task<IActionResult> CreatePhoneSession([FromBody] CreateVoiceSessionRequest request)
     {
-        var user = await FindUserAsync(request.UserId);
+        var user = await GetCurrentUserAsync();
         if (user == null)
             return NotFound(new { Message = "Kullanıcı bulunamadı." });
 
@@ -137,7 +146,7 @@ public class VoiceController : ControllerBase
     [HttpPost("text/turn")]
     public async Task<IActionResult> TextTurn([FromBody] VoiceTextTurnRequest request)
     {
-        var user = await FindUserAsync(request.UserId);
+        var user = await GetCurrentUserAsync();
         if (user == null)
             return NotFound(new { Message = "Kullanıcı bulunamadı." });
 
@@ -163,7 +172,7 @@ public class VoiceController : ControllerBase
     [HttpPost("phone/start")]
     public async Task<IActionResult> StartPhoneSession([FromBody] VoiceSessionActionRequest request)
     {
-        var session = await GetActiveVoiceSessionAsync(request.SessionId);
+        var session = await GetActiveVoiceSessionAsync(request.SessionId, CurrentUserId());
         if (session == null)
             return NotFound(new { Message = "Telefon oturumu bulunamadı veya süresi doldu." });
 
@@ -181,7 +190,7 @@ public class VoiceController : ControllerBase
     [HttpPost("phone/turn")]
     public async Task<IActionResult> PhoneTurn([FromBody] VoicePhoneTurnRequest request)
     {
-        var session = await GetActiveVoiceSessionAsync(request.SessionId);
+        var session = await GetActiveVoiceSessionAsync(request.SessionId, CurrentUserId());
         if (session == null)
             return NotFound(new { Message = "Telefon oturumu bulunamadı veya süresi doldu." });
 
@@ -201,7 +210,8 @@ public class VoiceController : ControllerBase
     [HttpPost("phone/end")]
     public async Task<IActionResult> EndPhoneSession([FromBody] VoiceSessionActionRequest request)
     {
-        var session = await _context.VoiceSessions.FirstOrDefaultAsync(s => s.Id == request.SessionId);
+        var userId = CurrentUserId();
+        var session = await _context.VoiceSessions.FirstOrDefaultAsync(s => s.Id == request.SessionId && s.UserId == userId);
         if (session == null)
             return NotFound(new { Message = "Telefon oturumu bulunamadı." });
 
@@ -430,10 +440,30 @@ public class VoiceController : ControllerBase
         return await _context.MilitaryIdentityUsers.FirstOrDefaultAsync(u => u.Id == userGuid);
     }
 
-    private async Task<VoiceSession?> GetActiveVoiceSessionAsync(Guid sessionId)
+    private string? CurrentUserId()
     {
+        return User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
+    }
+
+    private async Task<MilitaryIdentityUser?> GetCurrentUserAsync()
+    {
+        var userId = CurrentUserId();
+        return string.IsNullOrWhiteSpace(userId)
+            ? null
+            : await FindUserAsync(userId);
+    }
+
+    private async Task<VoiceSession?> GetActiveVoiceSessionAsync(Guid sessionId, string? userId)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            return null;
+
         return await _context.VoiceSessions
-            .FirstOrDefaultAsync(s => s.Id == sessionId && s.ExpiresAtUtc > DateTime.UtcNow && s.Status != "ended");
+            .FirstOrDefaultAsync(s =>
+                s.Id == sessionId &&
+                s.UserId == userId &&
+                s.ExpiresAtUtc > DateTime.UtcNow &&
+                s.Status != "ended");
     }
 
     private async Task<VoiceSession> GetOrCreateTextSessionAsync(VoiceTextTurnRequest request, string userId)
