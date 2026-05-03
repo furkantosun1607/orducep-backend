@@ -1,10 +1,11 @@
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrduCep.API;
+using OrduCep.API.Auth;
 using OrduCep.Application.Interfaces;
 using OrduCep.Domain.Entities;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace OrduCep.API.Controllers;
 
@@ -13,10 +14,14 @@ namespace OrduCep.API.Controllers;
 public class AuthController : ControllerBase
 {
     private readonly IApplicationDbContext _context;
+    private readonly IConfiguration _configuration;
+    private readonly IJwtTokenService _jwtTokenService;
 
-    public AuthController(IApplicationDbContext context)
+    public AuthController(IApplicationDbContext context, IConfiguration configuration, IJwtTokenService jwtTokenService)
     {
         _context = context;
+        _configuration = configuration;
+        _jwtTokenService = jwtTokenService;
     }
 
     [HttpPost("register")]
@@ -54,7 +59,7 @@ public class AuthController : ControllerBase
         {
             Id = Guid.NewGuid(),
             IdentityNumber = request.IdentityNumber.Trim(),
-            PasswordHash = HashPassword(request.Password),
+            PasswordHash = PasswordHashing.Hash(request.Password),
             FirstName = request.FirstName?.Trim() ?? string.Empty,
             LastName = request.LastName?.Trim() ?? string.Empty,
             PhoneNumber = request.PhoneNumber?.Trim() ?? string.Empty,
@@ -72,10 +77,10 @@ public class AuthController : ControllerBase
         return Ok(new
         {
             user.Id,
-            user.IdentityNumber,
+            IdentityNumber = MaskIdentity(user.IdentityNumber),
             user.FirstName,
             user.LastName,
-            user.PhoneNumber,
+            PhoneNumber = MaskPhone(user.PhoneNumber),
             user.Relation,
             Message = "Kayıt başarıyla tamamlandı."
         });
@@ -90,8 +95,14 @@ public class AuthController : ControllerBase
         var user = await _context.MilitaryIdentityUsers
             .FirstOrDefaultAsync(u => u.IdentityNumber == request.IdentityNumber.Trim());
 
-        if (user is null || user.PasswordHash != HashPassword(request.Password))
+        if (user is null || !PasswordHashing.Verify(user.PasswordHash, request.Password, out var needsRehash))
             return Unauthorized(new { Message = "Kimlik numarası veya şifre hatalı." });
+
+        if (needsRehash)
+        {
+            user.PasswordHash = PasswordHashing.Hash(request.Password);
+            await _context.SaveChangesAsync(HttpContext.RequestAborted);
+        }
 
         var userId = user.Id.ToString();
         var managedFacilityRows = await _context.FacilityStaffs
@@ -110,28 +121,78 @@ public class AuthController : ControllerBase
             Role = PersonnelAccessRules.DisplayStaffRole(user.OwnerRank, s.Role)
         });
 
+        var token = _jwtTokenService.CreateUserToken(user);
+
         return Ok(new
         {
             user.Id,
-            user.IdentityNumber,
+            IdentityNumber = MaskIdentity(user.IdentityNumber),
             user.FirstName,
             user.LastName,
-            user.PhoneNumber,
+            PhoneNumber = MaskPhone(user.PhoneNumber),
             user.Relation,
-            user.OwnerTcNo,
+            OwnerTcNo = MaskIdentity(user.OwnerTcNo),
             user.OwnerFirstName,
             user.OwnerLastName,
             user.OwnerRank,
             CanUseFacilities = PersonnelAccessRules.CanUseFacilities(user.OwnerRank),
-            ManagedFacilities = managedFacilities
+            ManagedFacilities = managedFacilities,
+            Token = token.Token,
+            token.ExpiresAtUtc
         });
     }
 
-    private static string HashPassword(string password)
+    [HttpPost("admin-login")]
+    public IActionResult AdminLogin([FromBody] LoginRequest request)
     {
-        using var sha = SHA256.Create();
-        var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(password));
-        return Convert.ToHexString(bytes);
+        var configuredIdentity = _configuration["ADMIN_IDENTITY_NUMBER"] ?? _configuration["ADMIN_USERNAME"];
+        var configuredPassword = _configuration["ADMIN_PASSWORD"];
+
+        if (string.IsNullOrWhiteSpace(configuredIdentity) || string.IsNullOrWhiteSpace(configuredPassword))
+            return StatusCode(503, new { Message = "Admin girişi için ADMIN_IDENTITY_NUMBER ve ADMIN_PASSWORD tanımlanmalıdır." });
+
+        if (!FixedTimeEquals(configuredIdentity.Trim(), request.IdentityNumber?.Trim() ?? string.Empty) ||
+            !FixedTimeEquals(configuredPassword, request.Password ?? string.Empty))
+        {
+            return Unauthorized(new { Message = "Admin kullanıcı adı veya şifre hatalı." });
+        }
+
+        var token = _jwtTokenService.CreateAdminToken(configuredIdentity.Trim());
+        return Ok(new
+        {
+            Id = configuredIdentity.Trim(),
+            FirstName = "Admin",
+            LastName = string.Empty,
+            CanUseFacilities = true,
+            ManagedFacilities = Array.Empty<object>(),
+            Token = token.Token,
+            token.ExpiresAtUtc
+        });
+    }
+
+    private static string MaskIdentity(string? value)
+    {
+        var digits = new string((value ?? string.Empty).Where(char.IsDigit).ToArray());
+        return digits.Length == 11
+            ? $"{digits[..3]}******{digits[^2..]}"
+            : string.Empty;
+    }
+
+    private static string MaskPhone(string? value)
+    {
+        var digits = new string((value ?? string.Empty).Where(char.IsDigit).ToArray());
+        if (digits.Length < 4)
+            return string.Empty;
+
+        return $"*** *** {digits[^4..]}";
+    }
+
+    private static bool FixedTimeEquals(string left, string right)
+    {
+        var leftBytes = Encoding.UTF8.GetBytes(left);
+        var rightBytes = Encoding.UTF8.GetBytes(right);
+        return leftBytes.Length == rightBytes.Length &&
+               CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
     }
 }
 

@@ -301,7 +301,7 @@ public static class SeedData
             {
                 Id = Guid.NewGuid(),
                 IdentityNumber = "11223344556",
-                PasswordHash = HashPassword("password123"),
+                PasswordHash = PasswordHashing.Hash("password123"),
                 FirstName = "Test",
                 LastName = "Kullanıcı",
                 PhoneNumber = "05000000000",
@@ -1311,10 +1311,4 @@ public static class SeedData
             values.Add(value.Trim());
     }
 
-    private static string HashPassword(string password)
-    {
-        using var sha = SHA256.Create();
-        var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(password));
-        return Convert.ToHexString(bytes);
-    }
 }

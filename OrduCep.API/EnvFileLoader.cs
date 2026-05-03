@@ -23,7 +23,9 @@ public static class EnvFileLoader
                 foreach (var candidate in new[]
                 {
                     Path.Combine(current.FullName, ".env"),
-                    Path.Combine(current.FullName, "OrduCep.API", ".env")
+                    Path.Combine(current.FullName, "OrduCep.API", ".env"),
+                    Path.Combine(current.FullName, "orducep-backend", ".env"),
+                    Path.Combine(current.FullName, "orducep-backend", "OrduCep.API", ".env")
                 })
                 {
                     if (File.Exists(candidate) && seen.Add(candidate))
@@ -54,7 +56,8 @@ public static class EnvFileLoader
             var key = line[..separatorIndex].Trim();
             var value = line[(separatorIndex + 1)..].Trim();
 
-            if (key.Length == 0 || Environment.GetEnvironmentVariable(key) != null)
+            var existingValue = Environment.GetEnvironmentVariable(key);
+            if (key.Length == 0 || !string.IsNullOrWhiteSpace(existingValue))
                 continue;
 
             Environment.SetEnvironmentVariable(key, Unquote(value));

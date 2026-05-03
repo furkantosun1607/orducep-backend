@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrduCep.API.Services;
@@ -10,6 +11,7 @@ using System.Text.Json.Nodes;
 namespace OrduCep.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class OrduevleriController : ControllerBase
 {
@@ -78,6 +80,22 @@ public class OrduevleriController : ControllerBase
             : Ok(orduevi);
     }
 
+    [HttpGet("{id:guid}/featured-image")]
+    public async Task<IActionResult> GetFeaturedImage(Guid id)
+    {
+        var image = await _context.Orduevleri
+            .Where(o => o.Id == id)
+            .Select(o => new
+            {
+                featuredImageUrl = o.FeaturedImageUrl
+            })
+            .FirstOrDefaultAsync();
+
+        return image == null
+            ? NotFound(new { Message = "Orduevi bulunamadı." })
+            : Ok(image);
+    }
+
     [HttpGet("{id:guid}/google-maps")]
     public async Task<IActionResult> GetGoogleMapsDetails(Guid id)
     {
@@ -92,7 +110,13 @@ public class OrduevleriController : ControllerBase
             if (string.IsNullOrWhiteSpace(placeId))
             {
                 var match = await _googlePlaces.FindPlaceIdAsync(orduevi, HttpContext.RequestAborted);
-                placeId = match?.PlaceId;
+                if (match != null)
+                {
+                    placeId = match.PlaceId;
+                    orduevi.ScrapedMetadataJson = WriteGooglePlaceId(orduevi.ScrapedMetadataJson, match);
+                    orduevi.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync(HttpContext.RequestAborted);
+                }
             }
 
             if (string.IsNullOrWhiteSpace(placeId))
@@ -107,9 +131,14 @@ public class OrduevleriController : ControllerBase
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
         }
+        catch (GooglePlacesApiException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { ex.Message });
+        }
     }
 
     [HttpPost("{id:guid}/google-maps/sync-place-id")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> SyncGooglePlaceId(Guid id, [FromQuery] bool force = false)
     {
         var orduevi = await _context.Orduevleri.FirstOrDefaultAsync(o => o.Id == id);
@@ -151,10 +180,18 @@ public class OrduevleriController : ControllerBase
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
         }
+        catch (GooglePlacesApiException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { ex.Message });
+        }
     }
 
     [HttpPost("google-maps/sync-place-ids")]
-    public async Task<IActionResult> SyncGooglePlaceIds([FromQuery] bool force = false, [FromQuery] int limit = 0)
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> SyncGooglePlaceIds(
+        [FromQuery] bool force = false,
+        [FromQuery] int limit = 0,
+        [FromQuery] bool verifyDetails = false)
     {
         try
         {
@@ -168,6 +205,8 @@ public class OrduevleriController : ControllerBase
             var matched = 0;
             var skipped = 0;
             var notFound = 0;
+            var withPhotos = 0;
+            var withReviews = 0;
 
             foreach (var orduevi in orduevleri)
             {
@@ -175,12 +214,19 @@ public class OrduevleriController : ControllerBase
                 if (!force && !string.IsNullOrWhiteSpace(existingPlaceId))
                 {
                     skipped++;
+                    var detailSummary = verifyDetails
+                        ? await ReadGoogleDetailSummaryAsync(existingPlaceId, HttpContext.RequestAborted)
+                        : null;
+                    if (detailSummary?.PhotoCount > 0) withPhotos++;
+                    if (detailSummary?.ReviewCount > 0) withReviews++;
+
                     results.Add(new
                     {
                         orduevi.Id,
                         orduevi.Name,
                         status = "skipped",
-                        placeId = existingPlaceId
+                        placeId = existingPlaceId,
+                        detailSummary
                     });
                     continue;
                 }
@@ -197,12 +243,19 @@ public class OrduevleriController : ControllerBase
                 orduevi.UpdatedAt = DateTime.UtcNow;
                 matched++;
 
+                var matchedDetailSummary = verifyDetails
+                    ? await ReadGoogleDetailSummaryAsync(match.PlaceId, HttpContext.RequestAborted)
+                    : null;
+                if (matchedDetailSummary?.PhotoCount > 0) withPhotos++;
+                if (matchedDetailSummary?.ReviewCount > 0) withReviews++;
+
                 results.Add(new
                 {
                     orduevi.Id,
                     orduevi.Name,
                     status = "matched",
-                    placeId = match.PlaceId
+                    placeId = match.PlaceId,
+                    detailSummary = matchedDetailSummary
                 });
             }
 
@@ -215,6 +268,9 @@ public class OrduevleriController : ControllerBase
                 matched,
                 skipped,
                 notFound,
+                withPhotos,
+                withReviews,
+                verifiedDetails = verifyDetails,
                 results
             });
         }
@@ -222,9 +278,57 @@ public class OrduevleriController : ControllerBase
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { ex.Message });
         }
+        catch (GooglePlacesApiException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { ex.Message });
+        }
+    }
+
+    [HttpGet("google-maps/sync-status")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> GetGoogleMapsSyncStatus()
+    {
+        var rows = await _context.Orduevleri
+            .OrderBy(o => o.Name)
+            .Select(o => new
+            {
+                o.Id,
+                o.Name,
+                o.ScrapedMetadataJson
+            })
+            .ToListAsync();
+
+        var items = rows.Select(o =>
+        {
+            var placeId = ReadGooglePlaceId(o.ScrapedMetadataJson);
+            return new
+            {
+                o.Id,
+                o.Name,
+                HasPlaceId = !string.IsNullOrWhiteSpace(placeId),
+                PlaceId = placeId
+            };
+        }).ToList();
+
+        return Ok(new
+        {
+            Total = items.Count,
+            WithPlaceId = items.Count(i => i.HasPlaceId),
+            MissingPlaceId = items.Count(i => !i.HasPlaceId),
+            Items = items
+        });
+    }
+
+    private async Task<GoogleDetailSummary?> ReadGoogleDetailSummaryAsync(string placeId, CancellationToken cancellationToken)
+    {
+        var details = await _googlePlaces.GetPlaceDetailsAsync(placeId, cancellationToken);
+        return details == null
+            ? null
+            : new GoogleDetailSummary(details.Photos.Count, details.Reviews.Count, details.Rating, details.UserRatingCount);
     }
 
     [HttpPost]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Create([FromBody] CreateOrdueviRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Address))
@@ -276,6 +380,7 @@ public class OrduevleriController : ControllerBase
     /// Mevcut bir orduevinin bilgilerini günceller (Admin).
     /// </summary>
     [HttpPut("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateOrdueviRequest request)
     {
         var orduevi = await _context.Orduevleri.FirstOrDefaultAsync(o => o.Id == id);
@@ -341,6 +446,7 @@ public class OrduevleriController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id)
     {
         var orduevi = await _context.Orduevleri
@@ -423,6 +529,7 @@ public class OrduevleriController : ControllerBase
 
     // 3. Bir orduevine yeni facility eklenmesi
     [HttpPost("{ordueviId:guid}/facilities")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> CreateFacility(Guid ordueviId, [FromBody] CreateOrdueviFacilityRequest request)
     {
         var ordueviExists = await _context.Orduevleri.AnyAsync(o => o.Id == ordueviId);
@@ -451,6 +558,7 @@ public class OrduevleriController : ControllerBase
 
     // 4. Bir orduevinin facilitysinin silinmesi
     [HttpDelete("{ordueviId:guid}/facilities/{facilityId:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> DeleteFacility(Guid ordueviId, Guid facilityId)
     {
         var facility = await _context.Facilities.FirstOrDefaultAsync(f => f.OrdueviId == ordueviId && f.Id == facilityId);
@@ -484,6 +592,7 @@ public class OrduevleriController : ControllerBase
 
     // 7. FacilityService ekleme endpointi
     [HttpPost("{ordueviId:guid}/facilities/{facilityId:guid}/services")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> CreateFacilityService(Guid ordueviId, Guid facilityId, [FromBody] CreateFacilityServiceRequest request)
     {
         var facilityExists = await _context.Facilities.AnyAsync(f => f.OrdueviId == ordueviId && f.Id == facilityId);
@@ -507,6 +616,7 @@ public class OrduevleriController : ControllerBase
 
     // 8. FacilityService silme endpointi
     [HttpDelete("{ordueviId:guid}/facilities/{facilityId:guid}/services/{serviceId:guid}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> DeleteFacilityService(Guid ordueviId, Guid facilityId, Guid serviceId)
     {
         var facilityExists = await _context.Facilities.AnyAsync(f => f.OrdueviId == ordueviId && f.Id == facilityId);
@@ -521,6 +631,12 @@ public class OrduevleriController : ControllerBase
         return NoContent();
     }
 }
+
+public sealed record GoogleDetailSummary(
+    int PhotoCount,
+    int ReviewCount,
+    double? Rating,
+    int? UserRatingCount);
 
 public class CreateOrdueviRequest
 {
