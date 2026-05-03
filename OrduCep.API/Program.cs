@@ -4,6 +4,8 @@ using OrduCep.API.Services;
 using OrduCep.Infrastructure.Persistence;
 using OrduCep.API;
 
+EnvFileLoader.Load();
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Tüm servisleri sisteme kayıt
@@ -11,6 +13,7 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddInfrastructure(builder.Configuration); // Gerçek veritabanı (MySQL)
+builder.Services.AddHttpClient();
 builder.Services.AddHttpClient<IGooglePlacesService, GooglePlacesService>();
 
 builder.Services.AddCors(options =>
@@ -32,7 +35,11 @@ using (var scope = app.Services.CreateScope())
     // Mevcut tablolara yeni kolonları ekle (EnsureCreated bunu yapmıyor)
     await SchemaMigrator.RunAsync(dbContext);
 
-    await SeedData.InitializeAsync(scope.ServiceProvider);
+    var seedDataEnabled = app.Configuration.GetValue("SEED_DATA_ENABLED", true);
+    if (seedDataEnabled)
+        await SeedData.InitializeAsync(scope.ServiceProvider);
+    else
+        Console.WriteLine("[SeedData] SEED_DATA_ENABLED=false olduğu için başlangıç seed/import adımı atlandı.");
 }
 
 if (app.Environment.IsDevelopment())

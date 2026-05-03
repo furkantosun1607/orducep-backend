@@ -12,6 +12,7 @@ public interface IApplicationDbContext
     DbSet<FacilityStaff> FacilityStaffs { get; set; }
     DbSet<Reservation> Reservations { get; set; }
     DbSet<MilitaryIdentityUser> MilitaryIdentityUsers { get; set; }
+    DbSet<VoiceSession> VoiceSessions { get; set; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken);
 }

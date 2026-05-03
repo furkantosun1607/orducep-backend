@@ -17,6 +17,7 @@ public class OrduCepDbContext : DbContext, IApplicationDbContext
     public DbSet<FacilityStaff> FacilityStaffs { get; set; } = null!;
     public DbSet<Reservation> Reservations { get; set; } = null!;
     public DbSet<MilitaryIdentityUser> MilitaryIdentityUsers { get; set; } = null!;
+    public DbSet<VoiceSession> VoiceSessions { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -93,5 +94,8 @@ public class OrduCepDbContext : DbContext, IApplicationDbContext
         builder.Entity<MilitaryIdentityUser>()
             .HasIndex(u => u.IdentityNumber)
             .IsUnique();
+
+        builder.Entity<VoiceSession>()
+            .HasIndex(s => s.UserId);
     }
 }
