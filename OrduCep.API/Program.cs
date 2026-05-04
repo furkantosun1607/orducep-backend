@@ -25,15 +25,17 @@ builder.Services.AddAuthorization();
 
 builder.Services.AddCors(options =>
 {
-    var allowedOrigins = (Environment.GetEnvironmentVariable("ALLOWED_ORIGINS") ??
-                          builder.Configuration["ALLOWED_ORIGINS"] ??
-                          "http://localhost:4200,http://localhost:4201,http://localhost:4202,https://orducep-web.onrender.com")
+    var defaultOrigins = new[] { "http://localhost:4200", "http://localhost:4201", "http://localhost:4202", "https://orducep-web.onrender.com" };
+    var envOrigins = (Environment.GetEnvironmentVariable("ALLOWED_ORIGINS") ?? builder.Configuration["ALLOWED_ORIGINS"] ?? "")
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    var allowedOrigins = defaultOrigins.Union(envOrigins).ToArray();
 
     options.AddPolicy("FrontendOnly",
         policy => policy.WithOrigins(allowedOrigins)
                         .AllowAnyMethod()
-                        .AllowAnyHeader());
+                        .AllowAnyHeader()
+                        .AllowCredentials());
 });
 
 var app = builder.Build();
