@@ -108,15 +108,25 @@ public sealed class GooglePlacesService : IGooglePlacesService
         Environment.GetEnvironmentVariable("GoogleMaps__ApiKey"),
         Environment.GetEnvironmentVariable("GoogleMaps:ApiKey")) ?? string.Empty;
 
-    private string LanguageCode => _configuration["GoogleMaps:LanguageCode"] ?? "tr";
+    private string LanguageCode => FirstNonBlank(
+        _configuration["GoogleMaps:LanguageCode"],
+        _configuration["GOOGLE_MAPS_LANGUAGE_CODE"],
+        Environment.GetEnvironmentVariable("GOOGLE_MAPS_LANGUAGE_CODE"),
+        Environment.GetEnvironmentVariable("GoogleMaps__LanguageCode"),
+        Environment.GetEnvironmentVariable("GoogleMaps:LanguageCode")) ?? "tr";
 
-    private string RegionCode => _configuration["GoogleMaps:RegionCode"] ?? "TR";
+    private string RegionCode => FirstNonBlank(
+        _configuration["GoogleMaps:RegionCode"],
+        _configuration["GOOGLE_MAPS_REGION_CODE"],
+        Environment.GetEnvironmentVariable("GOOGLE_MAPS_REGION_CODE"),
+        Environment.GetEnvironmentVariable("GoogleMaps__RegionCode"),
+        Environment.GetEnvironmentVariable("GoogleMaps:RegionCode")) ?? "TR";
 
-    private int MaxPhotos => ReadBoundedInt("GoogleMaps:MaxPhotos", 6, 0, 10);
+    private int MaxPhotos => ReadBoundedInt("GoogleMaps:MaxPhotos", "GOOGLE_MAPS_MAX_PHOTOS", 6, 0, 10);
 
-    private int MaxReviews => ReadBoundedInt("GoogleMaps:MaxReviews", 5, 0, 5);
+    private int MaxReviews => ReadBoundedInt("GoogleMaps:MaxReviews", "GOOGLE_MAPS_MAX_REVIEWS", 5, 0, 5);
 
-    private int PhotoMaxWidthPx => ReadBoundedInt("GoogleMaps:PhotoMaxWidthPx", 1200, 120, 4800);
+    private int PhotoMaxWidthPx => ReadBoundedInt("GoogleMaps:PhotoMaxWidthPx", "GOOGLE_MAPS_PHOTO_MAX_WIDTH_PX", 1200, 120, 4800);
 
     public async Task<GooglePlaceMatchResult?> FindPlaceIdAsync(Orduevi orduevi, CancellationToken cancellationToken)
     {
@@ -307,9 +317,16 @@ public sealed class GooglePlacesService : IGooglePlacesService
         return string.Join(' ', parts);
     }
 
-    private int ReadBoundedInt(string key, int fallback, int min, int max)
+    private int ReadBoundedInt(string key, string envKey, int fallback, int min, int max)
     {
-        var value = int.TryParse(_configuration[key], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+        var valueStr = FirstNonBlank(
+            _configuration[key],
+            _configuration[envKey],
+            Environment.GetEnvironmentVariable(envKey),
+            Environment.GetEnvironmentVariable(key.Replace(":", "__")),
+            Environment.GetEnvironmentVariable(key));
+
+        var value = int.TryParse(valueStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : fallback;
 
