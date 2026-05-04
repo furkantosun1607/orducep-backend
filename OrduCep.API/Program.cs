@@ -27,7 +27,7 @@ builder.Services.AddCors(options =>
 {
     var allowedOrigins = (Environment.GetEnvironmentVariable("ALLOWED_ORIGINS") ??
                           builder.Configuration["ALLOWED_ORIGINS"] ??
-                          "http://localhost:4200,http://localhost:4201,http://localhost:4202")
+                          "http://localhost:4200,http://localhost:4201,http://localhost:4202,https://orducep-web.onrender.com")
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     options.AddPolicy("FrontendOnly",
